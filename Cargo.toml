@@ -1,0 +1,26 @@
+[package]
+name = "clt"
+version = "0.1.0"
+edition = "2024"
+description = "Branch-scoped task list that lives in your repo, and that your coding agent can write to"
+license = "MIT"
+readme = "README.md"
+keywords = ["todo", "task", "cli", "git", "mcp"]
+categories = ["command-line-utilities", "development-tools"]
+
+[dependencies]
+anyhow = "1"
+anstream = "0.6"
+anstyle = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+unicode-width = "0.2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

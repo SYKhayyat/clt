@@ -1,0 +1,8 @@
+# Paths `clt scan` skips when harvesting TODO(clt): markers.
+# Exact path, `dir/` prefix, or a trailing `*` wildcard. One per line.
+#
+# This project is the pathological case for its own scanner: the docs explain
+# the marker syntax and the tests are built out of markers. Raw string literals
+# in particular defeat quote-counting by design, which is what this file is for.
+README.md
+src/scan.rs
