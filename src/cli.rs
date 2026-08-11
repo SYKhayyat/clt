@@ -81,6 +81,9 @@ pub enum Command {
     #[command(name = "move", visible_alias = "mv")]
     Move(MoveArgs),
 
+    /// Move tasks between a branch and the whole repo
+    Scope(ScopeArgs),
+
     /// Harvest `TODO(clt):` markers from the source into tasks
     Scan(ScanArgs),
 
@@ -92,6 +95,12 @@ pub enum Command {
 
     /// Print where the task list is stored
     Path,
+
+    /// Commit the task list with the repo, so it survives a clone
+    Share,
+
+    /// Go back to a local-only task list that is never committed
+    Unshare,
 
     /// Create .clt/ with sample hooks and a README
     Init,
@@ -144,6 +153,10 @@ pub struct ListArgs {
     /// A specific branch instead of the current one
     #[arg(long, short, value_name = "BRANCH", conflicts_with = "all")]
     pub branch: Option<String>,
+
+    /// Only tasks pinned to a branch that no longer exists
+    #[arg(long, conflicts_with_all = ["all", "branch"])]
+    pub orphaned: bool,
 }
 
 #[derive(Debug, Args)]
@@ -203,6 +216,37 @@ pub struct MoveArgs {
     /// Detach to the top level
     #[arg(long)]
     pub root: bool,
+}
+
+/// Where a task lives: one branch, or the whole repo.
+///
+/// Exactly one of these is required. Left to default, `clt scope 3` would be a
+/// coin flip between two irreversible-looking outcomes, and the error clap
+/// generates for a missing group is better than any guess.
+#[derive(Debug, Args)]
+#[group(required = true, multiple = false)]
+pub struct ScopeTarget {
+    /// Visible from every branch
+    #[arg(long)]
+    pub repo: bool,
+
+    /// A named branch
+    #[arg(long, value_name = "BRANCH")]
+    pub branch: Option<String>,
+
+    /// The branch you are on right now
+    #[arg(long)]
+    pub here: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ScopeArgs {
+    /// One or more task ids. Subtasks follow their parent, so name the root.
+    #[arg(required = true, num_args = 1..)]
+    pub ids: Vec<u32>,
+
+    #[command(flatten)]
+    pub target: ScopeTarget,
 }
 
 #[derive(Debug, Args)]

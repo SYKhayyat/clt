@@ -131,6 +131,74 @@ impl Repo {
         let _ = std::fs::write(&exclude, next);
     }
 
+    /// Undoes [`Self::ensure_excluded`], so the task list can be committed.
+    ///
+    /// Removes our line and the comment that introduces it, and nothing else —
+    /// `info/exclude` may well contain patterns somebody else put there, and
+    /// rewriting the whole file would be a fine way to lose them.
+    pub fn unexclude(&self) -> Result<bool> {
+        let exclude = self.git_common_dir.join("info").join("exclude");
+        let Ok(current) = std::fs::read_to_string(&exclude) else {
+            return Ok(false);
+        };
+
+        let mut kept: Vec<&str> = Vec::new();
+        let mut removed = false;
+        for line in current.lines() {
+            let t = line.trim();
+            if matches!(t, ".clt/" | ".clt" | "/.clt/" | "/.clt") {
+                removed = true;
+                continue;
+            }
+            // Our own comment, which would otherwise be left dangling above
+            // whatever pattern happens to follow it.
+            if t.starts_with("# clt task list") {
+                removed = true;
+                continue;
+            }
+            kept.push(line);
+        }
+        if !removed {
+            return Ok(false);
+        }
+
+        let mut next = kept.join("\n");
+        if !next.is_empty() && !next.ends_with('\n') {
+            next.push('\n');
+        }
+        std::fs::write(&exclude, next)
+            .with_context(|| format!("rewriting {}", exclude.display()))?;
+        Ok(true)
+    }
+
+    /// True when git is tracking `rel` (repo-relative, slash-separated).
+    ///
+    /// This is how "is the task list shared?" is answered. Deriving it from git
+    /// rather than storing a flag of our own means the answer cannot drift from
+    /// reality — someone who runs `git rm --cached` by hand has unshared the
+    /// list, and clt should agree with them.
+    pub fn is_tracked(&self, rel: &str) -> bool {
+        matches!(
+            git(&self.root, &["ls-files", "--error-unmatch", "--", rel]),
+            Ok(Some(_))
+        )
+    }
+
+    /// True when `rel` is ignored, by any mechanism: `.gitignore`, a nested
+    /// ignore file, the global excludes, or `info/exclude`.
+    ///
+    /// Needed because clt only ever writes to `info/exclude`, and cannot undo an
+    /// entry in a *committed* `.gitignore` — that file belongs to the project,
+    /// not to us. Detecting it is what lets `clt share` say so instead of
+    /// appearing to work and silently doing nothing.
+    pub fn ignore_source(&self, rel: &str) -> Option<String> {
+        // `check-ignore -v` prints `<source>:<line>:<pattern>\t<path>`.
+        let out = git(&self.root, &["check-ignore", "-v", "--", rel]).ok().flatten()?;
+        let first = out.lines().next()?;
+        let source = first.split(':').next()?.trim();
+        (!source.is_empty()).then(|| source.to_string())
+    }
+
     /// Commits reachable from HEAD but not from `since`, oldest first.
     ///
     /// Used by commit linkage. `since` is typically the last commit we scanned.
@@ -170,6 +238,26 @@ impl Repo {
             });
         }
         Ok(commits)
+    }
+
+    /// Every local branch name.
+    ///
+    /// Used to find tasks stranded on branches that have been merged and
+    /// deleted. Local heads only: a task filed on a branch that now exists only
+    /// on the remote is still orphaned as far as this checkout is concerned,
+    /// which is the question being asked.
+    pub fn branches(&self) -> std::collections::HashSet<String> {
+        let Ok(Some(out)) = git(
+            &self.root,
+            &["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+        ) else {
+            return std::collections::HashSet::new();
+        };
+        out.lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_owned)
+            .collect()
     }
 
     /// Resolves HEAD to a full sha, if there is one (a fresh repo has none).

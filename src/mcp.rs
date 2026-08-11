@@ -19,8 +19,8 @@ use chrono::Utc;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 
-use crate::store::{Scope, Store};
-use crate::task::{Location, State, Task};
+use crate::store::{Access, Scope, Store};
+use crate::task::{Location, Origin, State, Task};
 use crate::{hooks, journal};
 
 /// Protocol version we implement. We echo the client's requested version when
@@ -201,6 +201,40 @@ fn tool_definitions() -> Value {
             }
         },
         {
+            "name": "clt_reopen",
+            "description": "Move tasks back to todo. Use this when you closed something \
+                            prematurely, or when work you thought was finished turned out \
+                            not to be. Reopening a parent does not reopen its subtasks.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "ids": { "type": "array", "items": { "type": "integer" } }
+                },
+                "required": ["ids"]
+            }
+        },
+        {
+            "name": "clt_edit",
+            "description": "Change an existing task. Use this to correct or sharpen a task \
+                            rather than closing it and filing a replacement, which loses its \
+                            history. Only the fields you pass are changed.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer" },
+                    "title": { "type": "string", "description": "Replacement title" },
+                    "note": { "type": "string", "description": "Replacement detail; empty string clears it" },
+                    "file": { "type": "string", "description": "Location as path or path:line" },
+                    "state": {
+                        "type": "string",
+                        "enum": ["todo", "doing", "done"],
+                        "description": "Setting this to done also closes everything nested under the task"
+                    }
+                },
+                "required": ["id"]
+            }
+        },
+        {
             "name": "clt_search",
             "description": "Search every branch for tasks matching text in their title, \
                             note or file path.",
@@ -213,12 +247,12 @@ fn tool_definitions() -> Value {
     ])
 }
 
-fn open(global: bool) -> Result<Store> {
+fn open(global: bool, access: Access) -> Result<Store> {
     let store = if global {
-        Store::open_in(Scope::Global)?
+        Store::open_in(Scope::Global, access)?
     } else {
         let cwd = std::env::current_dir().context("reading the current directory")?;
-        Store::open(&cwd)?
+        Store::open(&cwd, access)?
     };
     if store.migrated {
         store.save()?;
@@ -240,10 +274,39 @@ fn actor() -> Option<String> {
     )
 }
 
+/// Task ids from either `ids: [1, 2]` or a single `id: 1`.
+///
+/// Accepting both spellings everywhere is deliberate. The tool schemas are read
+/// by a model that is generating arguments, and rejecting `id` where the schema
+/// happens to say `ids` buys nothing — the intent is unambiguous either way, and
+/// an error just costs a round trip to discover a naming detail.
+fn ids_from(args: &Value) -> Result<Vec<u32>> {
+    if let Some(list) = args.get("ids").and_then(Value::as_array) {
+        let ids: Vec<u32> = list
+            .iter()
+            .filter_map(Value::as_u64)
+            .map(|v| v as u32)
+            .collect();
+        if !ids.is_empty() {
+            return Ok(ids);
+        }
+    }
+    if let Some(one) = args.get("id").and_then(Value::as_u64) {
+        return Ok(vec![one as u32]);
+    }
+    anyhow::bail!("expected `ids` (a list of task ids) or `id` (a single one)")
+}
+
 fn call_tool(name: &str, args: &Value, global: bool) -> Result<String> {
     // Storage is reopened per call rather than held across the session, so a
-    // task you add from your own terminal is visible to the agent immediately.
-    let mut store = open(global)?;
+    // task you add from your own terminal is visible to the agent immediately —
+    // and so the write lock is held for one tool call, not for the lifetime of
+    // the agent's session.
+    let access = match name {
+        "clt_list" | "clt_search" => Access::Read,
+        _ => Access::Write,
+    };
+    let mut store = open(global, access)?;
     let now = Utc::now();
     let who = actor();
 
@@ -331,75 +394,133 @@ fn call_tool(name: &str, args: &Value, global: bool) -> Result<String> {
             Ok(serde_json::to_string_pretty(&t)?)
         }
 
-        "clt_close" | "clt_start" => {
-            let state = if name == "clt_close" {
-                State::Done
-            } else {
-                State::Doing
+        "clt_close" | "clt_start" | "clt_reopen" => {
+            let state = match name {
+                "clt_close" => State::Done,
+                "clt_start" => State::Doing,
+                _ => State::Todo,
             };
-            let ids: Vec<u32> = match name {
-                "clt_start" => vec![
-                    args.get("id")
-                        .and_then(Value::as_u64)
-                        .context("id is required")? as u32,
-                ],
-                _ => args
-                    .get("ids")
-                    .and_then(Value::as_array)
-                    .context("ids is required")?
-                    .iter()
-                    .filter_map(Value::as_u64)
-                    .map(|v| v as u32)
-                    .collect(),
-            };
+            // `clt_start` takes a single id and the other two take a list, which
+            // is a wart in the published schema rather than a distinction worth
+            // anything. Both spellings are accepted everywhere so a model that
+            // guesses the wrong one gets its work done instead of an error.
+            let ids = ids_from(args)?;
 
             for id in &ids {
                 store.require(*id)?;
             }
 
-            let mut touched = Vec::new();
-            let mut entries = Vec::new();
-            for id in &ids {
-                let targets = if state == State::Done {
-                    let mut all = vec![*id];
-                    all.extend(store.descendants(*id));
-                    all
-                } else {
-                    vec![*id]
-                };
-                for target in targets {
-                    let Some(task) = store.get_mut(target) else {
-                        continue;
-                    };
-                    if task.state == state {
-                        continue;
-                    }
-                    task.state = state;
-                    task.updated = now;
-                    let snapshot = task.clone();
-                    entries.push(
-                        journal::Entry::new(state.as_str())
-                            .actor(who.clone())
-                            .id(target)
-                            .detail(snapshot.title.clone())
-                            .branch(snapshot.branch.as_deref()),
-                    );
-                    touched.push(snapshot);
-                }
-            }
+            // Shared with the CLI, so the cascade rule and the journal verbs
+            // cannot drift between the two front ends.
+            let (touched, entries) =
+                crate::apply_state(&mut store, who.as_deref(), now, &ids, state);
 
             store.save()?;
+            store.release_lock();
             journal::append(store.dir(), &entries);
             for task in touched.iter().filter(|t| ids.contains(&t.id)) {
-                let event = if state == State::Done {
-                    "post-done"
-                } else {
-                    "post-start"
-                };
-                hooks::fire(store.dir(), event, task, who.as_deref(), hooks::Output::Divert);
+                // Divert: our stdout is the JSON-RPC frame stream.
+                hooks::fire(
+                    store.dir(),
+                    crate::state_event(state),
+                    task,
+                    who.as_deref(),
+                    hooks::Output::Divert,
+                );
             }
 
             Ok(serde_json::to_string_pretty(&touched)?)
+        }
+
+        "clt_edit" => {
+            let id = args
+                .get("id")
+                .and_then(Value::as_u64)
+                .context("id is required")? as u32;
+            store.require(id)?;
+
+            let title = args
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            // An explicitly empty note clears it, which is why this checks for
+            // presence rather than filtering blanks away like `title` does.
+            let note = args.get("note").and_then(Value::as_str);
+            let location = args
+                .get("file")
+                .and_then(Value::as_str)
+                .map(str::parse::<Location>)
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let state = args
+                .get("state")
+                .and_then(Value::as_str)
+                .map(str::parse::<State>)
+                .transpose()
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+
+            if title.is_none() && note.is_none() && location.is_none() && state.is_none() {
+                anyhow::bail!("nothing to change (pass title, note, file or state)");
+            }
+
+            let edits = title.is_some() || note.is_some() || location.is_some();
+            if edits {
+                let task = store.get_mut(id).expect("checked above");
+                if let Some(title) = title {
+                    task.title = title.to_string();
+                    // Editing a scanned task's title severs it from its source
+                    // marker, so the next scan doesn't revert the edit.
+                    if matches!(task.origin, Origin::Scan { .. }) {
+                        task.origin = Origin::Manual;
+                    }
+                }
+                if let Some(note) = note {
+                    task.note = (!note.trim().is_empty()).then(|| note.to_string());
+                }
+                if let Some(loc) = location {
+                    task.location = Some(loc);
+                }
+                task.updated = now;
+            }
+
+            let mut entries = Vec::new();
+            if edits {
+                let task = store.require(id)?;
+                entries.push(
+                    journal::Entry::new("edit")
+                        .actor(who.clone())
+                        .id(id)
+                        .detail(task.title.clone())
+                        .branch(task.branch.as_deref()),
+                );
+            }
+
+            let mut state_changed = Vec::new();
+            if let Some(state) = state {
+                let (touched, state_entries) =
+                    crate::apply_state(&mut store, who.as_deref(), now, &[id], state);
+                entries.extend(state_entries);
+                state_changed = touched;
+            }
+
+            store.save()?;
+            store.release_lock();
+            journal::append(store.dir(), &entries);
+
+            if let Some(state) = state {
+                for task in state_changed.iter().filter(|t| t.id == id) {
+                    hooks::fire(
+                        store.dir(),
+                        crate::state_event(state),
+                        task,
+                        who.as_deref(),
+                        hooks::Output::Divert,
+                    );
+                }
+            }
+
+            Ok(serde_json::to_string_pretty(store.require(id)?)?)
         }
 
         "clt_search" => {

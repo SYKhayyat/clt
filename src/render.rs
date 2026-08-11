@@ -36,6 +36,12 @@ fn paint(style: Style, text: &str) -> String {
     format!("{}{}{}", style.render(), text, style.render_reset())
 }
 
+/// Dims a fragment for callers outside this module, so styling stays in one
+/// place rather than every command reaching for `anstyle` itself.
+pub fn dimmed(text: &str) -> String {
+    paint(dim(), text)
+}
+
 pub fn warn(msg: &str) {
     let style = fg(AnsiColor::Yellow);
     let _ = anstream::eprintln!("{}", paint(style, &format!("clt: {msg}")));
@@ -114,12 +120,16 @@ pub fn tasks(store: &Store, rows: &[Row<'_>], opts: &ListOpts) {
         state: State,
     }
 
+    // One pass for the whole list. Asking the store per row rebuilt the parent
+    // index every time, which made rendering quadratic in the number of tasks.
+    let progress_of = store.progress_all();
+
     let cells: Vec<Cell> = rows
         .iter()
         .map(|row| {
             let t = row.task;
             let indent = "  ".repeat(row.depth);
-            let progress = match store.progress(t.id) {
+            let progress = match progress_of.get(&t.id) {
                 Some((done, total)) => format!("  {done}/{total}"),
                 None => String::new(),
             };

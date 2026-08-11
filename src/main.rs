@@ -4,6 +4,7 @@ mod cli;
 mod git;
 mod hooks;
 mod journal;
+mod lock;
 mod mcp;
 mod render;
 mod scan;
@@ -16,7 +17,7 @@ use clap::Parser;
 use std::process::ExitCode;
 
 use cli::{Cli, Command};
-use store::{Scope, Store};
+use store::{Access, Scope, Store};
 use task::{Location, Origin, State, Task};
 
 fn main() -> ExitCode {
@@ -49,6 +50,11 @@ impl Ctx {
     fn commit(&mut self, entries: Vec<journal::Entry>) -> Result<()> {
         self.store.save()?;
         journal::append(self.store.dir(), &entries);
+        // Every handler saves exactly once, so the write lock has done its job
+        // by here. Releasing it now keeps hook scripts — which run next, and
+        // which can do anything, including block on the network — out of the
+        // critical section.
+        self.store.release_lock();
         Ok(())
     }
 
@@ -57,6 +63,24 @@ impl Ctx {
             "{}",
             serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".into())
         );
+    }
+}
+
+/// Whether this invocation will modify the list, and so has to take the
+/// cross-process write lock.
+///
+/// Enumerated explicitly rather than inferred, because getting it wrong in the
+/// safe direction costs a few milliseconds of queueing and getting it wrong in
+/// the other direction costs somebody a task. Dry runs mutate the in-memory
+/// copy and deliberately never save, so they read.
+fn access_for(args: &Cli) -> Access {
+    match &args.command {
+        None | Some(Command::List(_) | Command::Find(_) | Command::Log(_) | Command::Path) => {
+            Access::Read
+        }
+        Some(Command::Scan(a)) if a.dry_run => Access::Read,
+        Some(Command::Sync(a)) if a.dry_run => Access::Read,
+        _ => Access::Write,
     }
 }
 
@@ -70,10 +94,11 @@ fn run() -> Result<()> {
     }
 
     let cwd = std::env::current_dir().context("reading the current directory")?;
+    let access = access_for(&args);
     let store = if args.global {
-        Store::open_in(Scope::Global)?
+        Store::open_in(Scope::Global, access)?
     } else {
-        Store::open(&cwd)?
+        Store::open(&cwd, access)?
     };
 
     // Repairs and imports are reported once, on stderr, so they never pollute
@@ -106,10 +131,13 @@ fn run() -> Result<()> {
         Some(Command::Rm(a)) => cmd_rm(&mut ctx, a),
         Some(Command::Edit(a)) => cmd_edit(&mut ctx, a),
         Some(Command::Move(a)) => cmd_move(&mut ctx, a),
+        Some(Command::Scope(a)) => cmd_scope(&mut ctx, a),
         Some(Command::Scan(a)) => cmd_scan(&mut ctx, a),
         Some(Command::Sync(a)) => cmd_sync(&mut ctx, a),
         Some(Command::Log(a)) => cmd_log(&mut ctx, a),
         Some(Command::Path) => cmd_path(&ctx),
+        Some(Command::Share) => cmd_share(&mut ctx),
+        Some(Command::Unshare) => cmd_unshare(&mut ctx),
         Some(Command::Init) => cmd_init(&ctx),
         Some(Command::Mcp) => unreachable!("handled above"),
     }
@@ -134,6 +162,10 @@ fn start_of_today(now: DateTime<Utc>) -> DateTime<Utc> {
 }
 
 fn cmd_list(ctx: &mut Ctx, args: cli::ListArgs) -> Result<()> {
+    if args.orphaned {
+        return cmd_list_orphaned(ctx, &args);
+    }
+
     let branch = args
         .branch
         .clone()
@@ -192,6 +224,59 @@ fn cmd_list(ctx: &mut Ctx, args: cli::ListArgs) -> Result<()> {
         .filter(|t| in_scope(t) && t.is_done() && !state_ok(t))
         .count();
     render::summary(open, doing, hidden_done);
+    Ok(())
+}
+
+/// Tasks pinned to a branch git no longer has.
+///
+/// Kept off the default path deliberately: answering it costs a `for-each-ref`,
+/// and bare `clt` is run dozens of times a day on a tool whose startup budget
+/// is already two process spawns.
+fn cmd_list_orphaned(ctx: &mut Ctx, args: &cli::ListArgs) -> Result<()> {
+    let Some(repo) = ctx.store.scope.repo() else {
+        bail!("--orphaned needs a git repository (there are no branches to compare against)");
+    };
+    let live = repo.branches();
+    if live.is_empty() {
+        // An unborn HEAD has no branches yet, and reporting every task as
+        // orphaned would be technically true and actively misleading.
+        bail!("this repository has no branches yet, so nothing can be orphaned");
+    }
+
+    let orphans: Vec<&Task> = ctx
+        .store
+        .orphaned(&live)
+        .into_iter()
+        .filter(|t| args.done || !t.is_done())
+        .collect();
+
+    if ctx.json {
+        ctx.out_json(&serde_json::to_value(&orphans)?);
+        return Ok(());
+    }
+
+    if orphans.is_empty() {
+        let _ = anstream::println!("  Every task is on a branch that still exists.");
+        return Ok(());
+    }
+
+    let ids: std::collections::HashSet<u32> = orphans.iter().map(|t| t.id).collect();
+    let rows = ctx.store.tree(|t| ids.contains(&t.id));
+    render::tasks(
+        &ctx.store,
+        &rows,
+        &render::ListOpts {
+            now: ctx.now,
+            show_branch: true,
+        },
+    );
+    let _ = anstream::println!();
+    let _ = anstream::println!(
+        "  {} task{} on branches that no longer exist.",
+        orphans.len(),
+        if orphans.len() == 1 { "" } else { "s" }
+    );
+    let _ = anstream::println!("  Rescue them with `clt scope <ID> --repo` or `--branch <NAME>`.");
     Ok(())
 }
 
@@ -302,31 +387,53 @@ fn cmd_add(ctx: &mut Ctx, args: cli::AddArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_set_state(ctx: &mut Ctx, ids: Vec<u32>, state: State) -> Result<()> {
-    // Validate everything before touching anything: a typo in the third id
-    // shouldn't leave the first two half-applied.
-    for id in &ids {
-        ctx.store.require(*id)?;
+/// The hook fired when a task reaches `state`.
+pub fn state_event(state: State) -> &'static str {
+    match state {
+        State::Done => "post-done",
+        State::Doing => "post-start",
+        State::Todo => "post-reopen",
     }
+}
 
+/// Moves tasks to `state`, returning what changed and the journal to match.
+///
+/// The single implementation of what a state transition *means*: the cascade
+/// rule, clearing a stale `closed_by`, skipping tasks already in that state,
+/// and the journal action it records.
+///
+/// Everything that closes a task routes through here — `clt done`, `clt edit
+/// --state`, and the MCP tools. Each used to carry its own copy, and they had
+/// drifted: `clt edit --state done` did not cascade, fired no hook, and
+/// journalled as "edit". Three transcriptions of one rule is three chances to
+/// get it wrong, so there is now only one.
+///
+/// Takes the store rather than a `Ctx` so the MCP server, which has no `Ctx`,
+/// can call the same code instead of transcribing it a fourth time.
+pub fn apply_state(
+    store: &mut Store,
+    actor: Option<&str>,
+    now: DateTime<Utc>,
+    ids: &[u32],
+    state: State,
+) -> (Vec<Task>, Vec<journal::Entry>) {
     let mut touched = Vec::new();
     let mut entries = Vec::new();
 
-    for id in &ids {
+    for id in ids {
         // Closing a parent closes its subtree. The inverse (reopen, start)
         // deliberately does not cascade: reopening a parent to add one more
         // subtask should not undo the twelve you already finished.
         let targets = if state == State::Done {
             let mut all = vec![*id];
-            all.extend(ctx.store.descendants(*id));
+            all.extend(store.descendants(*id));
             all
         } else {
             vec![*id]
         };
 
         for target in targets {
-            let now = ctx.now;
-            let Some(task) = ctx.store.get_mut(target) else {
+            let Some(task) = store.get_mut(target) else {
                 continue;
             };
             if task.state == state {
@@ -335,12 +442,13 @@ fn cmd_set_state(ctx: &mut Ctx, ids: Vec<u32>, state: State) -> Result<()> {
             task.state = state;
             task.updated = now;
             if state != State::Done {
+                // A reopened task must stop naming the commit that closed it.
                 task.closed_by = None;
             }
             let snapshot = task.clone();
             entries.push(
                 journal::Entry::new(state.as_str())
-                    .actor(ctx.actor.clone())
+                    .actor(actor.map(str::to_owned))
                     .id(target)
                     .detail(snapshot.title.clone())
                     .branch(snapshot.branch.as_deref()),
@@ -349,8 +457,33 @@ fn cmd_set_state(ctx: &mut Ctx, ids: Vec<u32>, state: State) -> Result<()> {
         }
     }
 
+    (touched, entries)
+}
+
+fn cmd_set_state(ctx: &mut Ctx, ids: Vec<u32>, state: State) -> Result<()> {
+    // Validate everything before touching anything: a typo in the third id
+    // shouldn't leave the first two half-applied.
+    for id in &ids {
+        ctx.store.require(*id)?;
+    }
+
+    let (touched, entries) = apply_state(
+        &mut ctx.store,
+        ctx.actor.clone().as_deref(),
+        ctx.now,
+        &ids,
+        state,
+    );
+
     if touched.is_empty() {
-        let _ = anstream::println!("  Already {state}.");
+        // Nothing changed, but --json still owes the caller a document. Printing
+        // "Already done." onto stdout here broke every pipeline that closed a
+        // task twice, and did it with exit status 0 so nothing noticed.
+        if ctx.json {
+            ctx.out_json(&serde_json::Value::Array(Vec::new()));
+        } else {
+            let _ = anstream::println!("  Already {state}.");
+        }
         return Ok(());
     }
 
@@ -359,11 +492,7 @@ fn cmd_set_state(ctx: &mut Ctx, ids: Vec<u32>, state: State) -> Result<()> {
     // Hooks fire for the ids you named, not for every task the cascade swept
     // up. Closing a parent with twenty children should not spawn twenty-one
     // processes.
-    let event = match state {
-        State::Done => "post-done",
-        State::Doing => "post-start",
-        State::Todo => "post-reopen",
-    };
+    let event = state_event(state);
     for task in touched.iter().filter(|t| ids.contains(&t.id)) {
         hooks::fire(ctx.store.dir(), event, task, ctx.actor(), hooks::Output::Inherit);
     }
@@ -439,44 +568,89 @@ fn cmd_edit(ctx: &mut Ctx, args: cli::EditArgs) -> Result<()> {
         .transpose()
         .map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let now = ctx.now;
-    let task = ctx
-        .store
-        .get_mut(args.id)
-        .ok_or_else(|| anyhow::anyhow!("no task #{}", args.id))?;
+    ctx.store.require(args.id)?;
 
-    if let Some(title) = args.title {
-        task.title = title;
-        // Editing a scanned task's title severs it from its source marker;
-        // otherwise the next scan would "helpfully" revert your edit.
-        if matches!(task.origin, Origin::Scan { .. }) {
-            task.origin = Origin::Manual;
+    // Whether any plain field changed, as opposed to only the state. It decides
+    // whether an "edit" belongs in the journal at all: `clt edit 3 --state done`
+    // is a close, and recording it as an edit is what made the audit log lie
+    // about how a task got closed.
+    let edits = args.title.is_some() || args.note.is_some() || location.is_some();
+
+    let now = ctx.now;
+    if edits {
+        let task = ctx.store.get_mut(args.id).expect("checked above");
+        if let Some(title) = args.title {
+            task.title = title;
+            // Editing a scanned task's title severs it from its source marker;
+            // otherwise the next scan would "helpfully" revert your edit.
+            if matches!(task.origin, Origin::Scan { .. }) {
+                task.origin = Origin::Manual;
+            }
+        }
+        if let Some(note) = args.note {
+            task.note = (!note.trim().is_empty()).then_some(note);
+        }
+        if let Some(loc) = location {
+            task.location = Some(loc);
+        }
+        task.updated = now;
+    }
+
+    let mut entries = Vec::new();
+    if edits {
+        let task = ctx.store.require(args.id)?;
+        entries.push(
+            journal::Entry::new("edit")
+                .actor(ctx.actor.clone())
+                .id(args.id)
+                .detail(task.title.clone())
+                .branch(task.branch.as_deref()),
+        );
+    }
+
+    // A state change goes through the same path as `clt done`/`start`/`reopen`,
+    // so it cascades, clears `closed_by`, journals under its own verb and fires
+    // the matching hook.
+    let mut state_changed = Vec::new();
+    if let Some(state) = args.state {
+        let actor = ctx.actor.clone();
+        let (touched, state_entries) =
+            apply_state(&mut ctx.store, actor.as_deref(), ctx.now, &[args.id], state);
+        entries.extend(state_entries);
+        state_changed = touched;
+    }
+
+    ctx.commit(entries)?;
+
+    if let Some(state) = args.state {
+        for task in state_changed.iter().filter(|t| t.id == args.id) {
+            hooks::fire(
+                ctx.store.dir(),
+                state_event(state),
+                task,
+                ctx.actor(),
+                hooks::Output::Inherit,
+            );
         }
     }
-    if let Some(note) = args.note {
-        task.note = (!note.trim().is_empty()).then_some(note);
-    }
-    if let Some(loc) = location {
-        task.location = Some(loc);
-    }
-    if let Some(state) = args.state {
-        task.state = state;
-    }
-    task.updated = now;
-    let snapshot = task.clone();
 
-    ctx.commit(vec![
-        journal::Entry::new("edit")
-            .actor(ctx.actor.clone())
-            .id(args.id)
-            .detail(snapshot.title.clone())
-            .branch(snapshot.branch.as_deref()),
-    ])?;
-
+    let snapshot = ctx.store.require(args.id)?.clone();
     if ctx.json {
         ctx.out_json(&serde_json::to_value(&snapshot)?);
     } else {
         render::changed(&snapshot);
+        // The cascade is invisible in a one-line summary, and silently closing
+        // a dozen subtasks is exactly the kind of surprise worth a sentence.
+        let swept = state_changed.len().saturating_sub(1);
+        if swept > 0 {
+            let _ = anstream::println!(
+                "  {}",
+                render::dimmed(&format!(
+                    "  and {swept} nested task{}",
+                    if swept == 1 { "" } else { "s" }
+                ))
+            );
+        }
     }
     Ok(())
 }
@@ -513,6 +687,90 @@ fn cmd_move(ctx: &mut Ctx, args: cli::MoveArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Moves tasks between a branch and the whole repo.
+///
+/// Scope was previously fixed at creation time, which made the branch lifecycle
+/// a one-way door: merge a feature branch, delete it, and everything filed
+/// there was stranded on a name git no longer knows. This is the way back —
+/// promote the leftovers to repo-wide, or re-pin them to the branch the work
+/// actually continued on.
+fn cmd_scope(ctx: &mut Ctx, args: cli::ScopeArgs) -> Result<()> {
+    let branch: Option<String> = if args.target.repo {
+        None
+    } else if let Some(name) = args.target.branch.clone() {
+        Some(name)
+    } else {
+        // --here. Refuse rather than silently doing what --repo does: on a
+        // detached HEAD there is no branch to mean, and quietly making a task
+        // repo-wide is not what anyone typing --here asked for.
+        Some(
+            ctx.store
+                .scope
+                .branch()
+                .map(str::to_owned)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "--here needs a branch, and HEAD is detached (try --branch <NAME> or --repo)"
+                    )
+                })?,
+        )
+    };
+
+    // Validate every id before moving anything, so a typo in the third one
+    // can't leave the first two re-scoped.
+    for id in &args.ids {
+        ctx.store.require(*id)?;
+    }
+
+    let mut changed = Vec::new();
+    let mut entries = Vec::new();
+    for id in &args.ids {
+        for moved in ctx.store.set_scope(*id, branch.as_deref(), ctx.now)? {
+            entries.push(
+                journal::Entry::new("scope")
+                    .actor(ctx.actor.clone())
+                    .id(moved)
+                    .detail(match branch.as_deref() {
+                        Some(b) => format!("to `{b}`"),
+                        None => "to the whole repo".into(),
+                    })
+                    .branch(branch.as_deref()),
+            );
+            changed.push(moved);
+        }
+    }
+
+    ctx.commit(entries)?;
+
+    let moved: Vec<&Task> = changed.iter().filter_map(|id| ctx.store.get(*id)).collect();
+
+    if ctx.json {
+        ctx.out_json(&serde_json::to_value(&moved)?);
+        return Ok(());
+    }
+
+    if moved.is_empty() {
+        let _ = anstream::println!("  Already scoped to {}.", describe_scope(branch.as_deref()));
+        return Ok(());
+    }
+    for task in &moved {
+        let _ = anstream::println!(
+            "  #{} {} → {}",
+            task.id,
+            task.title,
+            describe_scope(branch.as_deref())
+        );
+    }
+    Ok(())
+}
+
+fn describe_scope(branch: Option<&str>) -> String {
+    match branch {
+        Some(b) => format!("`{b}`"),
+        None => "the whole repo".into(),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -571,12 +829,26 @@ fn cmd_scan(ctx: &mut Ctx, args: cli::ScanArgs) -> Result<()> {
     }
 
     // Markers that vanished: the comment was deleted, so the work is done.
+    //
+    // Only tasks scanned from *this* branch are eligible. A working tree holds
+    // one branch's files, so a marker on `feat/x` is simply absent while you
+    // are on `main` — and the sweep used to read that absence as "deleted" and
+    // close it. Permanently, since a later scan finds the task already done and
+    // leaves it alone. That turned the two headline features into a pair that
+    // quietly ate each other's work.
+    //
+    // The test is an exact branch match rather than `in_scope`, which would also
+    // admit repo-wide tasks. The two mistakes are not symmetric: closing a task
+    // the user still has to do is invisible and unrecoverable, while leaving one
+    // open until they scan from the right branch corrects itself the moment they
+    // do.
     let live: std::collections::HashSet<&str> = hits.iter().map(|h| h.key.as_str()).collect();
     let stale: Vec<u32> = ctx
         .store
         .tasks()
         .iter()
         .filter(|t| !t.is_done())
+        .filter(|t| t.branch.as_deref() == branch.as_deref())
         .filter(|t| t.scan_key().is_some_and(|k| !live.contains(k)))
         .map(|t| t.id)
         .collect();
@@ -804,9 +1076,115 @@ fn cmd_path(ctx: &Ctx) -> Result<()> {
             "dir": ctx.store.dir(),
             "branch": ctx.store.scope.branch(),
             "scoped": ctx.store.scope.repo().is_some(),
+            // Whether the list travels with the repo (`clt share`).
+            "shared": ctx.store.is_shared(),
         }));
     } else {
         let _ = anstream::println!("{}", ctx.store.path().display());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// share / unshare
+// ---------------------------------------------------------------------------
+
+/// Makes the task list committable, so it survives a clone.
+///
+/// The default is local-only, which is right for a personal list but means the
+/// list dies with your working copy: clone the repo elsewhere and your tasks
+/// are gone, and a teammate never sees them at all. This is the opt-in.
+///
+/// It deliberately stops short of touching your index. Staging files is a
+/// decision about a commit you are in the middle of composing, and clt has no
+/// business making it — so we print the command instead of running it.
+fn cmd_share(ctx: &mut Ctx) -> Result<()> {
+    let Some(repo) = ctx.store.scope.repo().cloned() else {
+        bail!("there is no repo here for the task list to travel with");
+    };
+
+    // Persist first: sharing a list that does not exist on disk yet would
+    // produce advice to `git add` a file that isn't there.
+    ctx.store.save()?;
+    ctx.store.release_lock();
+
+    let already = ctx.store.is_shared();
+    let unexcluded = repo.unexclude()?;
+    ctx.store.write_local_gitignore()?;
+
+    // `info/exclude` is ours to edit; a committed .gitignore is not. If the
+    // project ignores .clt/ there, nothing we do here will make git see the
+    // file, and saying so beats appearing to succeed.
+    let blocked = repo
+        .ignore_source(store::REL_TASKS)
+        .filter(|src| !src.ends_with("info/exclude"));
+
+    if ctx.json {
+        ctx.out_json(&serde_json::json!({
+            "shared": already,
+            "unexcluded": unexcluded,
+            "blocked_by": blocked,
+            "path": ctx.store.path(),
+        }));
+        return Ok(());
+    }
+
+    if already {
+        let _ = anstream::println!("  The task list is already tracked by git.");
+        return Ok(());
+    }
+
+    if let Some(src) = blocked {
+        render::warn(&format!(
+            "`{src}` still ignores the task list, and that file belongs to the project, \
+             not to clt. Remove its .clt/ entry, then run `clt share` again."
+        ));
+        return Ok(());
+    }
+
+    let _ = anstream::println!("  The task list is no longer excluded. To share it:");
+    let _ = anstream::println!();
+    let _ = anstream::println!("    git add .clt && git commit -m \"track the clt task list\"");
+    let _ = anstream::println!();
+    for line in [
+        "tasks.json and hooks/ travel with the repo; the journal stays local,",
+        "per .clt/.gitignore. Expect the occasional merge conflict in tasks.json —",
+        "the format is line-oriented and meant to be resolved by hand.",
+    ] {
+        let _ = anstream::println!("  {line}");
+    }
+    Ok(())
+}
+
+/// Puts the task list back to local-only.
+fn cmd_unshare(ctx: &mut Ctx) -> Result<()> {
+    let Some(repo) = ctx.store.scope.repo().cloned() else {
+        bail!("there is no repo here — the global task list is always local");
+    };
+
+    let tracked = ctx.store.is_shared();
+    repo.ensure_excluded();
+
+    if ctx.json {
+        ctx.out_json(&serde_json::json!({
+            "shared": false,
+            "was_tracked": tracked,
+            "path": ctx.store.path(),
+        }));
+        return Ok(());
+    }
+
+    let _ = anstream::println!("  New commits will not carry the task list.");
+    if tracked {
+        // Excluding a file git already tracks does nothing at all — the entry
+        // only applies to untracked paths. Without this the command would look
+        // like it worked and the list would keep getting committed.
+        let _ = anstream::println!();
+        let _ = anstream::println!("  It is still tracked, though. To stop committing it:");
+        let _ = anstream::println!();
+        let _ = anstream::println!("    git rm -r --cached .clt");
+        let _ = anstream::println!();
+        let _ = anstream::println!("  That leaves your tasks on disk and drops them from the index.");
     }
     Ok(())
 }
@@ -817,18 +1195,43 @@ fn cmd_init(ctx: &Ctx) -> Result<()> {
     std::fs::create_dir_all(&hooks_dir)
         .with_context(|| format!("creating {}", hooks_dir.display()))?;
 
+    // Neither file is overwritten. `clt init` is safe to re-run, and someone
+    // who has annotated the README should keep their notes.
     let sample = hooks_dir.join("post-add.sample");
     if !sample.exists() {
-        std::fs::write(&sample, hooks::SAMPLE)?;
+        std::fs::write(&sample, hooks::SAMPLE)
+            .with_context(|| format!("writing {}", sample.display()))?;
+    }
+
+    // The directory documents itself, so whoever opens it next does not have to
+    // already know what clt is to work out what these files are.
+    let readme = dir.join("README.md");
+    if !readme.exists() {
+        std::fs::write(&readme, store::README)
+            .with_context(|| format!("writing {}", readme.display()))?;
     }
 
     ctx.store.save()?;
+
+    if ctx.json {
+        ctx.out_json(&serde_json::json!({
+            "tasks": ctx.store.path(),
+            "dir": dir,
+            "hooks": hooks_dir,
+            "sample_hook": sample,
+            "readme": readme,
+            "branch": ctx.store.scope.branch(),
+            "shared": ctx.store.is_shared(),
+        }));
+        return Ok(());
+    }
 
     let _ = anstream::println!("  Task list ready at {}", ctx.store.path().display());
     if let Some(branch) = ctx.store.scope.branch() {
         let _ = anstream::println!("  Tasks you add now are scoped to `{branch}`.");
     }
     let _ = anstream::println!("  Sample hook: {}", sample.display());
+    let _ = anstream::println!("  What's in .clt/: {}", readme.display());
     Ok(())
 }
 

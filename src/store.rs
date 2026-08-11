@@ -11,9 +11,11 @@
 //! * Outside a repo we fall back to one global list under the platform data
 //!   dir, so `clt` still works in a scratch shell instead of erroring.
 //!
-//! Writes are atomic (temp file + rename). This is somebody's daily task list;
-//! losing it to a crash midway through `serde_json::to_writer` is not an
-//! acceptable failure mode.
+//! Writes are atomic (temp file + rename) and serialized across processes (see
+//! [`crate::lock`]). This is somebody's daily task list, concurrently written by
+//! them and by their agent; losing it to a crash midway through
+//! `serde_json::to_writer`, or to two writers interleaving, is not an acceptable
+//! failure mode.
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
@@ -22,12 +24,103 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use crate::git::Repo;
+use crate::lock::Lock;
 use crate::task::{State, Task};
 
 /// Bumped only for changes that need a migration. Readers must tolerate a
 /// *lower* version by filling defaults, and refuse a higher one rather than
 /// silently discarding fields they don't understand.
 pub const FORMAT_VERSION: u32 = 1;
+
+/// The task list's path relative to the repo root, for the git queries that
+/// decide whether it is shared.
+pub const REL_TASKS: &str = ".clt/tasks.json";
+
+/// Dropped into `.clt/README.md` by `clt init`.
+///
+/// The directory holds a format this project deliberately documents as open —
+/// hand-editable, agent-writable — so it should explain itself to whoever opens
+/// it next, without them having to already know the tool exists.
+pub const README: &str = r##"# .clt/
+
+The task list for this repository, written by `clt`. Run `clt` anywhere in the
+repo to see it, or `clt --help` for the rest.
+
+## What is in here
+
+| File | Purpose |
+| --- | --- |
+| `tasks.json` | The list itself. Documented format, safe to hand-edit. |
+| `log.jsonl` | Append-only audit log: who changed what, and when. |
+| `hooks/` | Executables run after a task changes. See below. |
+| `.gitignore` | Present only when the list is shared; keeps local state local. |
+| `lock` | Held briefly while a process writes. Safe to delete if stale. |
+
+## tasks.json
+
+```json
+{
+  "version": 1,
+  "next_id": 4,
+  "tasks": [
+    {
+      "id": 3,
+      "title": "token refresh races on 401",
+      "state": "todo",
+      "branch": "feat/auth",
+      "parent": 1,
+      "location": { "file": "src/auth.rs", "line": 88 },
+      "created": "2026-08-09T14:37:02Z",
+      "updated": "2026-08-09T14:37:02Z"
+    }
+  ]
+}
+```
+
+`state` is `todo`, `doing` or `done`. `branch` absent means the task is
+repo-wide and shows on every branch. `parent` absent means it is a root task.
+
+Edit it by hand if you like. On load, clt repairs duplicate ids, parents that
+do not exist, and parent cycles, reporting each repair on stderr. Ids are never
+reused, so deleting a task does not free its number.
+
+## Is this committed?
+
+By default, no: `clt` adds `.clt/` to `.git/info/exclude`, which is per-clone
+and untracked. That keeps the list out of pull requests and out of merge
+conflicts, at the cost of it not surviving a clone.
+
+Run `clt share` to commit it instead, and `clt unshare` to go back.
+
+## Hooks
+
+An executable named for the event, in `hooks/`, in any language:
+
+    post-add  post-done  post-start  post-reopen  post-rm
+
+The task arrives as JSON on stdin, and in `CLT_EVENT`, `CLT_TASK_ID`,
+`CLT_TASK_TITLE`, `CLT_TASK_STATE`, `CLT_BRANCH`, `CLT_ACTOR` and
+`CLT_TASK_JSON`. Exit status is reported but ignored — these run after the
+change has already happened.
+
+`post-add.sample` in `hooks/` is a working example. Rename it to `post-add`
+(and `chmod +x` it on Unix) to enable it.
+"##;
+
+/// Written into `.clt/.gitignore` by `clt share`, so that opting in shares the
+/// task list without also sharing per-clone noise.
+pub const LOCAL_GITIGNORE: &str = "\
+# Written by `clt share`. The task list (tasks.json) and hooks/ are shared with
+# the repo; everything below is per-clone and must not be committed.
+#
+# The journal is local on purpose: it is an append-only record of activity in
+# this checkout, and two clones appending to the same file would conflict on
+# every pull.
+log.jsonl
+log.jsonl.*
+lock
+*.tmp
+";
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Data {
@@ -77,6 +170,20 @@ impl Scope {
     }
 }
 
+/// Whether the caller intends to modify the list.
+///
+/// A writer takes the cross-process lock at load time and holds it until it has
+/// saved, because a task edit is a read-modify-write and two of those
+/// interleaved lose one of the changes. A reader takes nothing: the store is
+/// replaced by an atomic rename, so a reader always sees some whole version of
+/// the file, and making `clt ls` queue behind an agent's write would be a cost
+/// with no benefit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    Read,
+    Write,
+}
+
 pub struct Store {
     pub scope: Scope,
     /// Directory holding `tasks.json`, the journal and the hooks.
@@ -85,25 +192,39 @@ pub struct Store {
     /// Warnings raised while loading (repaired cycles, dropped junk). Surfaced
     /// once, on stderr, rather than swallowed.
     pub warnings: Vec<String>,
-    /// Set when this load performed a one-time migration whose result isn't on
-    /// disk yet. The caller must persist it even for a read-only command —
-    /// otherwise a plain `clt` re-runs the import on every single invocation.
+    /// Set when this load performed a one-time migration, or repaired damage in
+    /// the file, and the result isn't on disk yet.
+    ///
+    /// The caller must persist it even for a read-only command. Otherwise a
+    /// plain `clt` re-runs the import on every single invocation and re-prints
+    /// the same repair warning forever — and, worse, the broken file stays on
+    /// disk, so every other reader of this deliberately-open format keeps
+    /// seeing the damage clt has been quietly working around.
     pub migrated: bool,
+    /// Held for the whole read-modify-write when opened for [`Access::Write`].
+    lock: Option<Lock>,
 }
 
 impl Store {
-    pub fn open(cwd: &Path) -> Result<Self> {
+    pub fn open(cwd: &Path, access: Access) -> Result<Self> {
         let scope = match crate::git::discover(cwd)? {
             Some(repo) => Scope::Repo(repo),
             None => Scope::Global,
         };
-        Self::open_in(scope)
+        Self::open_in(scope, access)
     }
 
-    pub fn open_in(scope: Scope) -> Result<Self> {
+    pub fn open_in(scope: Scope, access: Access) -> Result<Self> {
         let dir = match &scope {
             Scope::Repo(repo) => repo.root.join(".clt"),
             Scope::Global => global_dir()?,
+        };
+
+        // Taken before the file is read, not before it is written: the value of
+        // the lock is that nobody else loads the same starting state we did.
+        let lock = match access {
+            Access::Write => Some(Lock::acquire(&dir)?),
+            Access::Read => None,
         };
 
         let path = dir.join("tasks.json");
@@ -132,15 +253,28 @@ impl Store {
             Data::default()
         };
 
-        repair(&mut data, &mut warnings);
+        // A repair is as much a reason to rewrite the file as a migration is:
+        // the damage is still on disk until we do.
+        let repaired = repair(&mut data, &mut warnings);
 
         Ok(Self {
             scope,
             dir,
             data,
             warnings,
-            migrated,
+            migrated: migrated || repaired,
+            lock,
         })
+    }
+
+    /// Releases the write lock early, once the last save is done.
+    ///
+    /// Called instead of waiting for the `Store` to drop because hooks run
+    /// after the save, and a `post-add` that posts to Slack would otherwise
+    /// hold every other `clt` in the repo hostage for the length of an HTTP
+    /// round trip.
+    pub fn release_lock(&mut self) {
+        self.lock = None;
     }
 
     pub fn dir(&self) -> &Path {
@@ -149,6 +283,29 @@ impl Store {
 
     pub fn path(&self) -> PathBuf {
         self.dir.join("tasks.json")
+    }
+
+    /// Whether the list travels with the repo.
+    ///
+    /// Answered by asking git, not by a flag of our own — see
+    /// [`Repo::is_tracked`]. Always false outside a repo, where there is
+    /// nothing for the list to travel with.
+    pub fn is_shared(&self) -> bool {
+        self.scope
+            .repo()
+            .is_some_and(|r| r.is_tracked(REL_TASKS))
+    }
+
+    /// Writes the ignore file that keeps per-clone state out of a shared list.
+    ///
+    /// `tasks.json` and any hooks are the shared artifact. The journal is not:
+    /// it is an append-only record of local activity, and two clones appending
+    /// to it produces a merge conflict on every single pull, which would make
+    /// sharing miserable enough that nobody would use it.
+    pub fn write_local_gitignore(&self) -> Result<()> {
+        let path = self.dir.join(".gitignore");
+        std::fs::write(&path, LOCAL_GITIGNORE)
+            .with_context(|| format!("writing {}", path.display()))
     }
 
     pub fn tasks(&self) -> &[Task] {
@@ -277,6 +434,63 @@ impl Store {
         Ok(())
     }
 
+    /// Moves `id` and everything beneath it to `branch` (`None` for repo-wide).
+    ///
+    /// Returns the ids that actually changed, so callers can journal and report
+    /// them without re-deriving the subtree.
+    ///
+    /// The whole subtree moves together, and re-scoping anything other than a
+    /// root is refused. Both fall out of the same invariant [`Self::reparent`]
+    /// enforces: a subtask lives on its parent's branch. Moving one task out
+    /// from under its parent would leave a tree that renders half-visible on
+    /// either branch, which is worse than the inconvenience of being told to
+    /// re-scope the parent instead.
+    pub fn set_scope(
+        &mut self,
+        id: u32,
+        branch: Option<&str>,
+        now: DateTime<Utc>,
+    ) -> Result<Vec<u32>> {
+        let task = self.require(id)?;
+        if let Some(parent) = task.parent {
+            bail!(
+                "#{id} is nested under #{parent}, and a subtask shares its parent's scope\n\
+                 (re-scope #{parent}, or detach it first: `clt move {id} --root`)"
+            );
+        }
+
+        let mut targets = vec![id];
+        targets.extend(self.descendants(id));
+
+        let mut changed = Vec::new();
+        for target in targets {
+            let Some(task) = self.get_mut(target) else {
+                continue;
+            };
+            if task.branch.as_deref() == branch {
+                continue;
+            }
+            task.branch = branch.map(str::to_owned);
+            task.updated = now;
+            changed.push(target);
+        }
+        Ok(changed)
+    }
+
+    /// Tasks pinned to a branch that no longer exists.
+    ///
+    /// This is what happens to every task on a feature branch you merged and
+    /// deleted: it is scoped to a name git has forgotten, so it matches no view
+    /// except `--all` and quietly stops existing as far as you are concerned.
+    /// Repo-wide tasks are never orphaned — they belong to no branch by design.
+    pub fn orphaned(&self, live: &HashSet<String>) -> Vec<&Task> {
+        self.data
+            .tasks
+            .iter()
+            .filter(|t| t.branch.as_deref().is_some_and(|b| !live.contains(b)))
+            .collect()
+    }
+
     /// Removes `id` and its entire subtree. Returns the ids removed.
     pub fn remove_subtree(&mut self, id: u32) -> Vec<u32> {
         let mut doomed: HashSet<u32> = self.descendants(id).into_iter().collect();
@@ -316,9 +530,25 @@ impl Store {
             .map(|t| t.id)
             .collect();
 
+        // Built once and walked directly, rather than calling `ancestors()` per
+        // match: that rebuilds this same map on every call, so a list where most
+        // tasks match cost O(n²) — the dominant term in rendering a large list,
+        // far more so than the per-row progress lookup.
+        let parent_of: HashMap<u32, Option<u32>> =
+            self.data.tasks.iter().map(|t| (t.id, t.parent)).collect();
+
         let mut visible = matched.clone();
         for &id in &matched {
-            visible.extend(self.ancestors(id));
+            let mut cur = id;
+            // `visible` doubles as the visited set: reaching something already
+            // marked means the rest of this chain is already accounted for,
+            // which also makes a cycle terminate.
+            while let Some(Some(parent)) = parent_of.get(&cur).copied() {
+                if !visible.insert(parent) {
+                    break;
+                }
+                cur = parent;
+            }
         }
 
         let mut by_parent: HashMap<Option<u32>, Vec<&Task>> = HashMap::new();
@@ -363,6 +593,10 @@ impl Store {
     }
 
     /// Done/total counts across a task's descendants, for the `2/5` rollup.
+    ///
+    /// Convenient for a single lookup. Rendering a list wants
+    /// [`Self::progress_all`] instead — this rebuilds the parent index on every
+    /// call, so asking it once per row is quadratic in the size of the list.
     pub fn progress(&self, id: u32) -> Option<(usize, usize)> {
         let kids = self.descendants(id);
         if kids.is_empty() {
@@ -375,20 +609,88 @@ impl Store {
         Some((done, kids.len()))
     }
 
+    /// The same rollup for every task at once, in one pass.
+    ///
+    /// Tasks with no subtasks are absent from the map rather than present as
+    /// zero, matching [`Self::progress`] returning `None` for a leaf.
+    pub fn progress_all(&self) -> HashMap<u32, (usize, usize)> {
+        let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+        for t in &self.data.tasks {
+            if let Some(p) = t.parent {
+                children.entry(p).or_default().push(t.id);
+            }
+        }
+
+        // Pre-order across the whole forest. Every task is a starting point if
+        // nothing has reached it yet, so a node orphaned by a hand-edit still
+        // gets counted instead of silently reading 0/0.
+        let mut order: Vec<u32> = Vec::with_capacity(self.data.tasks.len());
+        let mut seen: HashSet<u32> = HashSet::new();
+        for root in self.data.tasks.iter().filter(|t| t.parent.is_none()) {
+            walk(root.id, &children, &mut seen, &mut order);
+        }
+        for t in &self.data.tasks {
+            walk(t.id, &children, &mut seen, &mut order);
+        }
+
+        let done_flag: HashMap<u32, usize> = self
+            .data
+            .tasks
+            .iter()
+            .map(|t| (t.id, usize::from(t.is_done())))
+            .collect();
+
+        // Reversed pre-order visits every child before its parent, so each
+        // subtotal is ready by the time the parent needs it.
+        let mut subtree: HashMap<u32, (usize, usize)> = HashMap::new();
+        for id in order.iter().rev() {
+            let mut done = done_flag.get(id).copied().unwrap_or(0);
+            let mut total = 1;
+            for kid in children.get(id).map(Vec::as_slice).unwrap_or(&[]) {
+                let (kd, kt) = subtree.get(kid).copied().unwrap_or((0, 0));
+                done += kd;
+                total += kt;
+            }
+            subtree.insert(*id, (done, total));
+        }
+
+        // Report descendants only, so a parent's own state never counts towards
+        // its own progress.
+        subtree
+            .into_iter()
+            .filter_map(|(id, (done, total))| {
+                let self_done = done_flag.get(&id).copied().unwrap_or(0);
+                (total > 1).then_some((id, (done - self_done, total - 1)))
+            })
+            .collect()
+    }
+
     /// Finds an existing task harvested from the same source marker.
     pub fn find_by_scan_key(&self, key: &str) -> Option<&Task> {
         self.data.tasks.iter().find(|t| t.scan_key() == Some(key))
     }
 
     pub fn save(&self) -> Result<()> {
-        // Only claim the exclude entry when we create the storage directory for
-        // the first time. Re-adding it on every save would silently undo the
-        // choice of anyone who deleted the line in order to commit their task
-        // list, which is a documented escape hatch.
-        let first_time = !self.dir.exists();
+        // Only claim the exclude entry when writing the list for the first
+        // time. Re-adding it on every save would silently undo `clt share`, and
+        // would re-exclude a list that arrived with a clone.
+        //
+        // Keyed on the task file rather than on the directory: taking the write
+        // lock creates the directory, so by the time we get here `.clt/` always
+        // exists and testing for it would mean the entry was never written at
+        // all.
+        let first_time = !self.path().exists();
 
         std::fs::create_dir_all(&self.dir)
             .with_context(|| format!("creating {}", self.dir.display()))?;
+
+        // A store opened read-only still saves in one case: a legacy import has
+        // to land on disk or every subsequent run repeats it. Take the lock for
+        // that write alone, so it can't interleave with a real writer.
+        let _borrowed = match self.lock {
+            Some(_) => None,
+            None => Some(Lock::acquire(&self.dir)?),
+        };
 
         if first_time
             && let Scope::Repo(repo) = &self.scope
@@ -397,19 +699,85 @@ impl Store {
         }
 
         let path = self.path();
+
         // Write-then-rename. A half-written temp file is garbage we can throw
         // away; a half-written tasks.json is your week.
-        let tmp = path.with_extension("json.tmp");
+        //
+        // The temp name carries the pid. A shared `tasks.json.tmp` was the
+        // original bug here and it was worse than a lost update: two writers
+        // truncating and filling the same temp file produced a rename of one
+        // process's complete JSON followed by the other's tail, and the list
+        // came back "not readable as a clt task list". Writers are serialized
+        // by the lock above, so this is belt to that suspenders — but the
+        // migration path can save without holding it, and a temp file is
+        // cheaper to make unique than to reason about.
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
         let bytes = serde_json::to_vec_pretty(&self.data).context("serializing task list")?;
         std::fs::write(&tmp, &bytes).with_context(|| format!("writing {}", tmp.display()))?;
-        std::fs::rename(&tmp, &path).with_context(|| {
-            format!(
-                "replacing {} (temp file left at {})",
-                path.display(),
-                tmp.display()
-            )
-        })?;
+
+        if let Err(e) = replace(&tmp, &path) {
+            // Don't leave our debris behind for a failure the user now has to
+            // read about.
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e).with_context(|| format!("replacing {}", path.display()));
+        }
         Ok(())
+    }
+}
+
+/// `rename`, retried briefly.
+///
+/// The write lock keeps other *writers* out, but readers take no lock by
+/// design, and on Windows replacing a file that another process has open can
+/// fail with a sharing violation — from a concurrent `clt ls`, or from a virus
+/// scanner that opened the file the instant we wrote it. Both clear in
+/// milliseconds.
+///
+/// This is exactly the case the tool is built for, so failing the user's
+/// `clt add` because someone else was reading at that moment is not acceptable.
+/// A handful of retries covers it; a persistent failure (no permission, disk
+/// full) still surfaces, because the last error is what gets returned.
+fn replace(tmp: &Path, path: &Path) -> std::io::Result<()> {
+    const ATTEMPTS: u32 = 12;
+    let mut delay = std::time::Duration::from_millis(2);
+
+    for attempt in 1..=ATTEMPTS {
+        match std::fs::rename(tmp, path) {
+            Ok(()) => return Ok(()),
+            Err(e) if attempt == ATTEMPTS => return Err(e),
+            Err(e) if crate::lock::is_transient(&e) => {
+                std::thread::sleep(delay);
+                // Backs off to ~50ms by the final attempt, roughly a quarter of
+                // a second in total, which no interactive user will notice and
+                // every sharing violation outlives.
+                delay = (delay * 2).min(std::time::Duration::from_millis(50));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the loop returns on its final attempt")
+}
+
+/// Appends `start` and everything under it to `order`, pre-order.
+///
+/// Iterative rather than recursive, and guarded by `seen`, for the same reason
+/// [`Store::tree`] is: the depth comes from a file an agent writes, and a task
+/// list that overflows the stack is not a bug report worth receiving.
+fn walk(
+    start: u32,
+    children: &HashMap<u32, Vec<u32>>,
+    seen: &mut HashSet<u32>,
+    order: &mut Vec<u32>,
+) {
+    let mut stack = vec![start];
+    while let Some(id) = stack.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        order.push(id);
+        for kid in children.get(&id).map(Vec::as_slice).unwrap_or(&[]) {
+            stack.push(*kid);
+        }
     }
 }
 
@@ -447,7 +815,11 @@ fn parse(raw: &str) -> Result<Data> {
 /// The file is advertised as agent-writable, so treating it as trusted input
 /// would be naive. Everything here fixes rather than rejects: refusing to start
 /// because a subtask points at a deleted parent would be a terrible trade.
-fn repair(data: &mut Data, warnings: &mut Vec<String>) {
+///
+/// Returns whether anything was actually changed, so the caller knows the copy
+/// on disk no longer matches the one in memory.
+fn repair(data: &mut Data, warnings: &mut Vec<String>) -> bool {
+    let before = warnings.len();
     // Duplicate ids: keep the first, renumber the rest onto fresh ids.
     let mut seen_ids = HashSet::new();
     let mut renumbered = Vec::new();
@@ -485,42 +857,87 @@ fn repair(data: &mut Data, warnings: &mut Vec<String>) {
     // Cycles. Without this a hand-edited `3 → 5 → 3` turns every tree walk into
     // an infinite loop, and `clt` — the thing you run twenty times a day —
     // hangs or blows the stack.
-    let parent_of: HashMap<u32, Option<u32>> =
-        data.tasks.iter().map(|t| (t.id, t.parent)).collect();
-    let mut cyclic = Vec::new();
-    for task in &data.tasks {
-        let mut seen = HashSet::from([task.id]);
-        let mut cur = task.id;
-        while let Some(Some(p)) = parent_of.get(&cur).copied() {
-            if !seen.insert(p) {
-                cyclic.push(task.id);
-                break;
-            }
-            cur = p;
-        }
-    }
-    if !cyclic.is_empty() {
-        // Break the cycle at its lowest id: deterministic, and it keeps the
+    for cycle in find_cycles(&data.tasks) {
+        // Break at the lowest id on the cycle: deterministic, and it keeps the
         // largest possible intact subtree.
-        let cut = cyclic.iter().copied().min().expect("non-empty");
+        let cut = cycle.iter().copied().min().expect("a cycle is non-empty");
         for task in &mut data.tasks {
             if task.id == cut {
                 task.parent = None;
             }
         }
         warnings.push(format!(
-            "parent cycle involving {} — detached #{cut} to break it",
-            cyclic
+            "parent cycle {} — detached #{cut} to break it",
+            cycle
                 .iter()
                 .map(|id| format!("#{id}"))
                 .collect::<Vec<_>>()
-                .join(", ")
+                .join(" → ")
         ));
     }
 
     if data.version < FORMAT_VERSION {
         data.version = FORMAT_VERSION;
     }
+
+    // Every repair above records a warning, so "did we change anything" and
+    // "did we have anything to say" are the same question.
+    warnings.len() > before
+}
+
+/// Every parent cycle in the list, each as the ids that form the loop.
+///
+/// The distinction that matters here is between a task that *is* on a cycle and
+/// one that merely *points into* one. The original implementation collected
+/// both and then detached the lowest id it had found, which is very often a
+/// task hanging off the loop rather than in it — so the cycle survived, its
+/// members stayed unreachable from any root, and they vanished from `ls`,
+/// `find` and `--json` alike while a warning announced the repair. Tasks
+/// silently absent from every view is the worst outcome available, given the
+/// whole point of the repair is that a hand-edited file should not cost you
+/// data.
+///
+/// Every task has at most one parent, so cycles are disjoint and detaching a
+/// single member breaks one outright — no need to re-run to a fixed point.
+fn find_cycles(tasks: &[Task]) -> Vec<Vec<u32>> {
+    let parent_of: HashMap<u32, Option<u32>> = tasks.iter().map(|t| (t.id, t.parent)).collect();
+
+    let mut cycles = Vec::new();
+    // Ids whose ancestry has already been walked. Without this the scan is
+    // quadratic on a long chain, and re-reports the same cycle once per task
+    // that leads into it.
+    let mut settled: HashSet<u32> = HashSet::new();
+
+    for task in tasks {
+        if settled.contains(&task.id) {
+            continue;
+        }
+        // Where each id sits in the current walk, so that revisiting one tells
+        // us not just *that* there is a loop but where it starts.
+        let mut position: HashMap<u32, usize> = HashMap::new();
+        let mut path: Vec<u32> = Vec::new();
+        let mut cur = task.id;
+
+        loop {
+            if settled.contains(&cur) {
+                break; // joins ancestry we have already accounted for
+            }
+            if let Some(&start) = position.get(&cur) {
+                // Everything from the first sighting onwards is the loop; what
+                // came before it is the tail leading in, and is not cyclic.
+                cycles.push(path[start..].to_vec());
+                break;
+            }
+            position.insert(cur, path.len());
+            path.push(cur);
+            match parent_of.get(&cur).copied().flatten() {
+                Some(parent) => cur = parent,
+                None => break, // reached a root
+            }
+        }
+        settled.extend(path);
+    }
+    cycles
 }
 
 /// Platform data directory for the out-of-repo fallback list.
@@ -628,6 +1045,9 @@ mod tests {
             data,
             warnings: Vec::new(),
             migrated: false,
+            // Pure in-memory fixtures never save, so they need no lock — and
+            // taking one would have these tests contend with each other.
+            lock: None,
         }
     }
 
@@ -703,6 +1123,96 @@ mod tests {
         assert_eq!(store.tree(|_| true).len(), 3);
     }
 
+    /// Ids still reachable by walking down from the roots — i.e. everything the
+    /// renderer, `find` and `--json` can actually see.
+    fn visible(store: &Store) -> HashSet<u32> {
+        store.tree(|_| true).iter().map(|r| r.task.id).collect()
+    }
+
+    #[test]
+    fn a_cycle_is_broken_even_when_another_task_points_into_it() {
+        // The shape the old repair could not handle: 2 ↔ 3 is the cycle, and 1
+        // merely hangs off it. Collecting "everything that reaches a cycle" put
+        // #1 in the set, and detaching the lowest id detached #1 — which was
+        // never the problem. The loop survived, and #2 and #3 disappeared from
+        // every view while the warning claimed a fix.
+        let mut data = Data::default();
+        data.tasks = vec![task(1, Some(2)), task(2, Some(3)), task(3, Some(2))];
+        let mut warnings = Vec::new();
+        repair(&mut data, &mut warnings);
+
+        assert!(
+            find_cycles(&data.tasks).is_empty(),
+            "the cycle must actually be gone, not merely reported"
+        );
+        assert!(warnings.iter().any(|w| w.contains("cycle")), "{warnings:?}");
+
+        let store = store_with(data.tasks);
+        assert_eq!(
+            visible(&store),
+            HashSet::from([1, 2, 3]),
+            "no task may be left unreachable from any root"
+        );
+    }
+
+    #[test]
+    fn several_independent_cycles_are_all_broken() {
+        // Each task has one parent, so cycles are disjoint — but there can be
+        // more than one, and stopping after the first would leave the rest.
+        let mut data = Data::default();
+        data.tasks = vec![
+            task(1, Some(2)),
+            task(2, Some(1)),
+            task(3, Some(4)),
+            task(4, Some(5)),
+            task(5, Some(3)),
+        ];
+        let mut warnings = Vec::new();
+        repair(&mut data, &mut warnings);
+
+        assert!(find_cycles(&data.tasks).is_empty());
+        assert_eq!(
+            warnings.iter().filter(|w| w.contains("cycle")).count(),
+            2,
+            "each cycle deserves its own report"
+        );
+        let store = store_with(data.tasks);
+        assert_eq!(visible(&store).len(), 5);
+    }
+
+    #[test]
+    fn a_task_that_is_its_own_parent_is_a_cycle_of_one() {
+        let mut data = Data::default();
+        data.tasks = vec![task(1, Some(1)), task(2, Some(1))];
+        let mut warnings = Vec::new();
+        repair(&mut data, &mut warnings);
+
+        assert_eq!(data.tasks[0].parent, None);
+        let store = store_with(data.tasks);
+        assert_eq!(visible(&store).len(), 2);
+    }
+
+    #[test]
+    fn find_cycles_reports_only_the_loop_not_the_tail_leading_into_it() {
+        // 1 → 2 → 3 → 4 → 3. The cycle is {3,4}; 1 and 2 are just a tail.
+        let tasks = vec![
+            task(1, Some(2)),
+            task(2, Some(3)),
+            task(3, Some(4)),
+            task(4, Some(3)),
+        ];
+        let cycles = find_cycles(&tasks);
+        assert_eq!(cycles.len(), 1);
+        let members: HashSet<u32> = cycles[0].iter().copied().collect();
+        assert_eq!(members, HashSet::from([3, 4]), "got {:?}", cycles[0]);
+    }
+
+    #[test]
+    fn find_cycles_leaves_an_ordinary_tree_alone() {
+        let tasks = vec![task(1, None), task(2, Some(1)), task(3, Some(2))];
+        assert!(find_cycles(&tasks).is_empty());
+    }
+
     #[test]
     fn load_detaches_tasks_pointing_at_missing_parents() {
         let mut data = Data::default();
@@ -722,6 +1232,68 @@ mod tests {
         let ids: HashSet<u32> = data.tasks.iter().map(|t| t.id).collect();
         assert_eq!(ids.len(), 2, "duplicate ids must be resolved");
         assert!(warnings.iter().any(|w| w.contains("duplicate")));
+    }
+
+    #[test]
+    fn re_scoping_takes_the_whole_subtree() {
+        // Half a tree on one branch and half on another renders as a tree with
+        // holes in it from both sides, so the subtree is the unit of movement.
+        let mut a = task(1, None);
+        a.branch = Some("feat/x".into());
+        let mut b = task(2, Some(1));
+        b.branch = Some("feat/x".into());
+        let mut c = task(3, Some(2));
+        c.branch = Some("feat/x".into());
+        let mut store = store_with(vec![a, b, c]);
+
+        let moved = store.set_scope(1, None, Utc::now()).unwrap();
+        assert_eq!(moved, vec![1, 2, 3]);
+        assert!(store.tasks().iter().all(|t| t.branch.is_none()));
+    }
+
+    #[test]
+    fn re_scoping_a_subtask_is_refused() {
+        let mut parent = task(1, None);
+        parent.branch = Some("feat/x".into());
+        let mut child = task(2, Some(1));
+        child.branch = Some("feat/x".into());
+        let mut store = store_with(vec![parent, child]);
+
+        let err = store.set_scope(2, None, Utc::now()).unwrap_err();
+        assert!(err.to_string().contains("nested under #1"), "got: {err}");
+        // And nothing moved.
+        assert_eq!(store.get(2).unwrap().branch.as_deref(), Some("feat/x"));
+    }
+
+    #[test]
+    fn re_scoping_reports_only_what_actually_changed() {
+        let mut t = task(1, None);
+        t.branch = Some("main".into());
+        let mut store = store_with(vec![t]);
+        assert!(
+            store.set_scope(1, Some("main"), Utc::now()).unwrap().is_empty(),
+            "moving a task where it already is is not a change"
+        );
+    }
+
+    #[test]
+    fn orphans_are_tasks_whose_branch_git_has_forgotten() {
+        let mut live_branch = task(1, None);
+        live_branch.branch = Some("main".into());
+        let mut dead_branch = task(2, None);
+        dead_branch.branch = Some("feat/merged-and-deleted".into());
+        let repo_wide = task(3, None);
+
+        let store = store_with(vec![live_branch, dead_branch, repo_wide]);
+        let live = HashSet::from(["main".to_string()]);
+
+        let orphans: Vec<u32> = store.orphaned(&live).iter().map(|t| t.id).collect();
+        assert_eq!(
+            orphans,
+            vec![2],
+            "only the task on a branch that no longer exists — a repo-wide task \
+             belongs to no branch and can never be orphaned"
+        );
     }
 
     #[test]
@@ -771,6 +1343,47 @@ mod tests {
         let store = store_with(kids);
         assert_eq!(store.progress(1), Some((1, 2)));
         assert_eq!(store.progress(3), None, "a leaf has no progress");
+    }
+
+    #[test]
+    fn progress_all_agrees_with_progress_task_for_task() {
+        // The batch version exists only to be faster, so the one thing that
+        // must never differ is the answer.
+        let mut tasks = vec![
+            task(1, None),
+            task(2, Some(1)),
+            task(3, Some(1)),
+            task(4, Some(2)),
+            task(5, Some(4)),
+            task(6, None), // a leaf root
+            task(7, None),
+        ];
+        tasks[1].state = State::Done; // #2
+        tasks[4].state = State::Done; // #5
+        tasks[6].state = State::Done; // #7
+        let store = store_with(tasks);
+
+        let batch = store.progress_all();
+        for t in store.tasks() {
+            assert_eq!(
+                batch.get(&t.id).copied(),
+                store.progress(t.id),
+                "disagreement on #{}",
+                t.id
+            );
+        }
+        // And spot-check the shape, so a mutual failure can't pass.
+        assert_eq!(batch.get(&1).copied(), Some((2, 4)));
+        assert_eq!(batch.get(&6), None, "a leaf is absent, not (0, 0)");
+    }
+
+    #[test]
+    fn progress_all_counts_a_parent_that_is_itself_done() {
+        // A parent's own state must not leak into its own rollup.
+        let mut tasks = vec![task(1, None), task(2, Some(1))];
+        tasks[0].state = State::Done;
+        let store = store_with(tasks);
+        assert_eq!(store.progress_all().get(&1).copied(), Some((0, 1)));
     }
 
     #[test]
