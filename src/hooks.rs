@@ -154,7 +154,7 @@ pub const SAMPLE: &str = r#"#!/bin/sh
 #
 # Exit status is reported but ignored — this hook cannot veto the change.
 #
-# Events: post-add  post-done  post-reopen  post-rm
+# Events: post-add  post-done  post-start  post-reopen  post-rm
 #
 # Example: shout when your agent files something, but stay quiet for yourself.
 if [ -n "$CLT_ACTOR" ]; then
