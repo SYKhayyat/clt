@@ -1,0 +1,150 @@
+name: CI
+
+# There were 98 tests here and nothing ran them. That is not a hypothetical
+# gap: the suite spawns real `clt` processes, shells out to `git`, creates
+# branches and races fifteen writers against one store — tests whose failures
+# come from the environment, not from the code, and which had only ever been
+# observed on one Windows machine. The two claims this project is built on
+# (branch scoping, concurrent writes) are exactly the ones that rot silently
+# when nobody else ever runs the suite.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Nothing here writes to the repository or publishes anything.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    # Both platforms, because this codebase has real per-platform behaviour and
+    # every bit of it was previously verified by hand on Windows only: path
+    # separators differ (`git` answers in forward slashes everywhere), and a
+    # closed pipe surfaces as EPIPE on Unix versus a Windows pipe error, with
+    # `panic = "abort"` waiting behind whichever one is mishandled.
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      # One platform failing is information about that platform; cancelling the
+      # other job throws away the comparison that makes it diagnosable.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Stable, not pinned: this is the toolchain anyone installing from source
+      # will have, so the build and the suite should be measured against it. The
+      # gate that a new compiler could break for no reason — clippy — is pinned
+      # separately in the job below.
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # `--locked` throughout: a CI run that quietly resolves a different
+      # dependency tree than Cargo.lock is testing something nobody committed.
+      - run: cargo build --release --locked
+
+      - run: cargo test --locked
+
+      # `cargo test` builds the dev profile. The release profile is a different
+      # compilation — `panic = "abort"`, LTO, `opt-level = "z"`, symbols
+      # stripped — and it is the one people install, so it gets driven at least
+      # once. Every assertion here can fail: a command that exits zero without
+      # doing anything is the failure mode this whole project is about.
+      - name: Drive the release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Absolute, because the rest of this runs in a throwaway repo
+          # elsewhere. `.exe` on the Windows runner.
+          clt="$PWD/target/release/clt"
+          [ -x "$clt" ] || clt="$clt.exe"
+          if [ ! -x "$clt" ]; then
+            echo "::error::the release build exited zero without producing a binary"
+            exit 1
+          fi
+
+          fail() { echo "::error::$1"; exit 1; }
+
+          cd "$(mktemp -d)"
+          git init --quiet --initial-branch=main .
+          git config user.email ci@example.com
+          git config user.name ci
+          printf '// TODO(clt): harvest me\n' > src.rs
+          git add -A
+          git commit -qm init
+
+          # No init step, as documented: the first `add` creates the store.
+          "$clt" add "a task on main" > /dev/null
+          "$clt" scan > /dev/null
+
+          # Two tasks: the typed one and the one harvested from the marker.
+          # `|| true` because grep exits 1 on no matches, and 0 matches is a
+          # result to report, not a reason to die three lines early.
+          count="$("$clt" ls --json | grep -c '"id"' || true)"
+          [ "$count" = "2" ] || fail "expected 2 tasks after add + scan, got $count"
+
+          # Branch scoping — the headline claim — driven end to end.
+          git checkout -q -b feat/x
+          "$clt" add "a task on feat/x" > /dev/null
+          if ! "$clt" ls --json | grep -q "a task on feat/x"; then
+            fail "a task filed on feat/x is not visible from feat/x"
+          fi
+          git checkout -q main
+          if "$clt" ls --json | grep -q "a task on feat/x"; then
+            fail "a task filed on feat/x is visible from main"
+          fi
+
+          if ! "$clt" path --json | grep -q '"tasks"'; then
+            fail "clt path --json did not emit a tasks path"
+          fi
+
+  lint:
+    # Pinned, unlike the job above, and for one specific reason: `-D warnings`
+    # turns every future clippy lint into a build failure on a commit that
+    # nobody wrote. Tracking `stable` here means the repo can go red on a
+    # Tuesday because Rust shipped, which teaches everyone to ignore a red
+    # badge. Bump this deliberately and fix what it finds in that commit.
+    #
+    # Both platforms, because `#[cfg(windows)]` code is invisible to a linter
+    # running on Linux — src/git.rs has some.
+    name: clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.97.1'
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # `--all-targets` so the tests are linted too, and they are a third of the
+      # code here.
+      - run: cargo clippy --all-targets --locked -- -D warnings
+
+  # Deliberately no `cargo fmt --check`. This source is hand-wrapped so the
+  # explanatory comments and the code they explain line up, and rustfmt's
+  # default chain width reflows a good deal of it into something harder to
+  # read. Adding the gate would mean either a reformat commit that touches
+  # every file or a rustfmt.toml reverse-engineered to bless the current
+  # layout; neither catches a bug. Clippy is the check that finds real things,
+  # and it is above.
