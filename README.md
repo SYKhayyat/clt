@@ -199,8 +199,10 @@ exist in a rendered list:
 
 ```json
 {
-  "id": 3, "title": "hash passwords", "state": "doing", "branch": "feat/auth",
-  "parent": 2, "location": { "file": "src/auth.rs", "line": 88 },
+  "id": 3, "title": "hash passwords", "note": "argon2, not bcrypt",
+  "state": "doing", "branch": "feat/auth", "parent": 2,
+  "location": { "file": "src/auth.rs", "line": 88 },
+  "actor": "claude", "origin": { "kind": "manual" },
   "created": "2026-08-09T14:37:02Z", "updated": "2026-08-09T14:37:02Z",
   "depth": 1, "context": false
 }
@@ -208,6 +210,13 @@ exist in a rendered list:
 
 `depth` is nesting depth, so a flat array still renders as a tree. `context` is
 true for an ancestor pulled in only to hold a matched subtask in place.
+
+`origin` is on every row and says how the task got here — `{"kind":"manual"}`
+for one somebody filed, `{"kind":"scan","key":"…"}` for one harvested from a
+marker. `actor` is who filed it. Everything optional — `note`, `parent`,
+`branch`, `location`, `actor`, `closed_by` — is left out rather than sent as
+null, so read the row defensively; only `id`, `title`, `state`, `origin`,
+`created`, `updated`, `depth` and `context` are always there.
 
 `clt log` shows who did what:
 
@@ -253,17 +262,33 @@ writes a `.clt/README.md` describing the directory to whoever opens it next.
 ```json
 {
   "version": 1,
-  "next_id": 4,
+  "next_id": 5,
+  "last_commit": "9f3c1ab4d0e2f6a8b1c3d5e7f9a0b2c4d6e8f012",
   "tasks": [
     {
       "id": 3,
       "title": "token refresh races on 401",
+      "note": "only when the clock skews past the leeway",
       "state": "todo",
       "branch": "feat/auth",
       "parent": 1,
       "location": { "file": "src/auth.rs", "line": 88 },
+      "actor": "claude",
+      "origin": { "kind": "manual" },
       "created": "2026-08-09T14:37:02Z",
       "updated": "2026-08-09T14:37:02Z"
+    },
+    {
+      "id": 4,
+      "title": "retry on 429 too",
+      "state": "done",
+      "branch": "feat/auth",
+      "location": { "file": "src/http.rs", "line": 142 },
+      "actor": "scan",
+      "origin": { "kind": "scan", "key": "d441342cf10dab0d" },
+      "closed_by": "9f3c1ab4d0e2f6a8b1c3d5e7f9a0b2c4d6e8f012",
+      "created": "2026-08-09T14:41:55Z",
+      "updated": "2026-08-09T15:02:10Z"
     }
   ]
 }
@@ -274,6 +299,18 @@ absent `parent` means a root task. Ids are never reused, so deleting a task
 doesn't free its number. Nesting is stored as a parent pointer rather than
 nested children, which keeps every task addressable by a flat id and makes a
 re-nest a one-field write.
+
+`note` is the long description, `actor` is who filed it, and `closed_by` is the
+full sha of the commit that closed it, when `clt sync` did the closing. At the
+file level, `last_commit` is how far `clt sync` has already read history.
+
+**`origin` is the one to leave alone.** It records how a task got here.
+`{"kind":"manual"}` means somebody filed it and no scan will ever touch it.
+`{"kind":"scan","key":"…"}` means a `TODO(clt):` marker owns it, and the key is
+a hash of that marker's text — it is how a rescan recognises the marker it
+already harvested. Delete or edit the key by hand and the next `clt scan` sees
+an unfamiliar marker: it files a second task for it, and closes this one as if
+you'd deleted the comment.
 
 By default the list is **local only**. `clt` adds `.clt/` to
 `.git/info/exclude` (per-clone and untracked) rather than editing your
