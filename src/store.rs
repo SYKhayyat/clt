@@ -1035,10 +1035,18 @@ fn import_legacy(path: &Path) -> Result<(Data, String)> {
 mod tests {
     use super::*;
 
+    /// A store's worth of tasks, with `next_id` past the highest one so an
+    /// insert can't collide with a fixture.
+    fn data_with(tasks: Vec<Task>) -> Data {
+        Data {
+            next_id: tasks.iter().map(|t| t.id + 1).max().unwrap_or(1),
+            tasks,
+            ..Data::default()
+        }
+    }
+
     fn store_with(tasks: Vec<Task>) -> Store {
-        let mut data = Data::default();
-        data.next_id = tasks.iter().map(|t| t.id + 1).max().unwrap_or(1);
-        data.tasks = tasks;
+        let data = data_with(tasks);
         Store {
             scope: Scope::Global,
             dir: PathBuf::from("."),
@@ -1110,8 +1118,7 @@ mod tests {
     #[test]
     fn load_breaks_parent_cycles_instead_of_hanging() {
         // Exactly what a careless hand-edit produces.
-        let mut data = Data::default();
-        data.tasks = vec![task(1, Some(3)), task(2, Some(1)), task(3, Some(2))];
+        let mut data = data_with(vec![task(1, Some(3)), task(2, Some(1)), task(3, Some(2))]);
         let mut warnings = Vec::new();
         repair(&mut data, &mut warnings);
 
@@ -1136,8 +1143,7 @@ mod tests {
         // #1 in the set, and detaching the lowest id detached #1 — which was
         // never the problem. The loop survived, and #2 and #3 disappeared from
         // every view while the warning claimed a fix.
-        let mut data = Data::default();
-        data.tasks = vec![task(1, Some(2)), task(2, Some(3)), task(3, Some(2))];
+        let mut data = data_with(vec![task(1, Some(2)), task(2, Some(3)), task(3, Some(2))]);
         let mut warnings = Vec::new();
         repair(&mut data, &mut warnings);
 
@@ -1159,14 +1165,13 @@ mod tests {
     fn several_independent_cycles_are_all_broken() {
         // Each task has one parent, so cycles are disjoint — but there can be
         // more than one, and stopping after the first would leave the rest.
-        let mut data = Data::default();
-        data.tasks = vec![
+        let mut data = data_with(vec![
             task(1, Some(2)),
             task(2, Some(1)),
             task(3, Some(4)),
             task(4, Some(5)),
             task(5, Some(3)),
-        ];
+        ]);
         let mut warnings = Vec::new();
         repair(&mut data, &mut warnings);
 
@@ -1182,8 +1187,7 @@ mod tests {
 
     #[test]
     fn a_task_that_is_its_own_parent_is_a_cycle_of_one() {
-        let mut data = Data::default();
-        data.tasks = vec![task(1, Some(1)), task(2, Some(1))];
+        let mut data = data_with(vec![task(1, Some(1)), task(2, Some(1))]);
         let mut warnings = Vec::new();
         repair(&mut data, &mut warnings);
 
@@ -1215,8 +1219,7 @@ mod tests {
 
     #[test]
     fn load_detaches_tasks_pointing_at_missing_parents() {
-        let mut data = Data::default();
-        data.tasks = vec![task(1, Some(99))];
+        let mut data = data_with(vec![task(1, Some(99))]);
         let mut warnings = Vec::new();
         repair(&mut data, &mut warnings);
         assert_eq!(data.tasks[0].parent, None);
@@ -1225,8 +1228,7 @@ mod tests {
 
     #[test]
     fn load_renumbers_duplicate_ids() {
-        let mut data = Data::default();
-        data.tasks = vec![task(1, None), task(1, None)];
+        let mut data = data_with(vec![task(1, None), task(1, None)]);
         let mut warnings = Vec::new();
         repair(&mut data, &mut warnings);
         let ids: HashSet<u32> = data.tasks.iter().map(|t| t.id).collect();

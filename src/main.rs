@@ -26,7 +26,7 @@ fn main() -> ExitCode {
         Err(e) => {
             // `{:#}` prints the whole anyhow chain on one line, so the cause is
             // visible without a --verbose flag nobody remembers.
-            let _ = anstream::eprintln!("clt: {e:#}");
+            anstream::eprintln!("clt: {e:#}");
             ExitCode::FAILURE
         }
     }
@@ -59,7 +59,7 @@ impl Ctx {
     }
 
     fn out_json(&self, value: &serde_json::Value) {
-        let _ = anstream::println!(
+        anstream::println!(
             "{}",
             serde_json::to_string_pretty(value).unwrap_or_else(|_| "null".into())
         );
@@ -256,7 +256,7 @@ fn cmd_list_orphaned(ctx: &mut Ctx, args: &cli::ListArgs) -> Result<()> {
     }
 
     if orphans.is_empty() {
-        let _ = anstream::println!("  Every task is on a branch that still exists.");
+        anstream::println!("  Every task is on a branch that still exists.");
         return Ok(());
     }
 
@@ -270,13 +270,13 @@ fn cmd_list_orphaned(ctx: &mut Ctx, args: &cli::ListArgs) -> Result<()> {
             show_branch: true,
         },
     );
-    let _ = anstream::println!();
-    let _ = anstream::println!(
+    anstream::println!();
+    anstream::println!(
         "  {} task{} on branches that no longer exist.",
         orphans.len(),
         if orphans.len() == 1 { "" } else { "s" }
     );
-    let _ = anstream::println!("  Rescue them with `clt scope <ID> --repo` or `--branch <NAME>`.");
+    anstream::println!("  Rescue them with `clt scope <ID> --repo` or `--branch <NAME>`.");
     Ok(())
 }
 
@@ -310,7 +310,7 @@ fn cmd_find(ctx: &mut Ctx, args: cli::FindArgs) -> Result<()> {
     }
 
     if rows.is_empty() {
-        let _ = anstream::println!("  Nothing matching {:?}.", args.query.join(" "));
+        anstream::println!("  Nothing matching {:?}.", args.query.join(" "));
         return Ok(());
     }
 
@@ -482,7 +482,7 @@ fn cmd_set_state(ctx: &mut Ctx, ids: Vec<u32>, state: State) -> Result<()> {
         if ctx.json {
             ctx.out_json(&serde_json::Value::Array(Vec::new()));
         } else {
-            let _ = anstream::println!("  Already {state}.");
+            anstream::println!("  Already {state}.");
         }
         return Ok(());
     }
@@ -546,7 +546,7 @@ fn cmd_rm(ctx: &mut Ctx, args: cli::RmArgs) -> Result<()> {
         ctx.out_json(&serde_json::to_value(&removed)?);
     } else {
         for task in &removed {
-            let _ = anstream::println!("  deleted #{} {}", task.id, task.title);
+            anstream::println!("  deleted #{} {}", task.id, task.title);
         }
     }
     Ok(())
@@ -643,7 +643,7 @@ fn cmd_edit(ctx: &mut Ctx, args: cli::EditArgs) -> Result<()> {
         // a dozen subtasks is exactly the kind of surprise worth a sentence.
         let swept = state_changed.len().saturating_sub(1);
         if swept > 0 {
-            let _ = anstream::println!(
+            anstream::println!(
                 "  {}",
                 render::dimmed(&format!(
                     "  and {swept} nested task{}",
@@ -679,10 +679,10 @@ fn cmd_move(ctx: &mut Ctx, args: cli::MoveArgs) -> Result<()> {
     } else {
         match parent {
             Some(p) => {
-                let _ = anstream::println!("  #{} now under #{p}", args.id);
+                anstream::println!("  #{} now under #{p}", args.id);
             }
             None => {
-                let _ = anstream::println!("  #{} detached to the top level", args.id);
+                anstream::println!("  #{} detached to the top level", args.id);
             }
         }
     }
@@ -752,11 +752,11 @@ fn cmd_scope(ctx: &mut Ctx, args: cli::ScopeArgs) -> Result<()> {
     }
 
     if moved.is_empty() {
-        let _ = anstream::println!("  Already scoped to {}.", describe_scope(branch.as_deref()));
+        anstream::println!("  Already scoped to {}.", describe_scope(branch.as_deref()));
         return Ok(());
     }
     for task in &moved {
-        let _ = anstream::println!(
+        anstream::println!(
             "  #{} {} → {}",
             task.id,
             task.title,
@@ -904,22 +904,22 @@ fn cmd_scan(ctx: &mut Ctx, args: cli::ScanArgs) -> Result<()> {
 
 fn report_scan(added: &[Task], closed: &[Task], moved: &[Task], dry: bool) {
     if added.is_empty() && closed.is_empty() && moved.is_empty() {
-        let _ = anstream::println!("  Markers and tasks already agree.");
+        anstream::println!("  Markers and tasks already agree.");
         return;
     }
     for t in added {
         let loc = t.location.as_ref().map(ToString::to_string).unwrap_or_default();
-        let _ = anstream::println!("  + #{}  {}  {}", t.id, t.title, loc);
+        anstream::println!("  + #{}  {}  {}", t.id, t.title, loc);
     }
     for t in closed {
-        let _ = anstream::println!("  ✓ #{}  {}  (marker gone)", t.id, t.title);
+        anstream::println!("  ✓ #{}  {}  (marker gone)", t.id, t.title);
     }
     for t in moved {
         let loc = t.location.as_ref().map(ToString::to_string).unwrap_or_default();
-        let _ = anstream::println!("  → #{}  {}  now at {}", t.id, t.title, loc);
+        anstream::println!("  → #{}  {}  now at {}", t.id, t.title, loc);
     }
     if dry {
-        let _ = anstream::println!("  (dry run — nothing written)");
+        anstream::println!("  (dry run — nothing written)");
     }
 }
 
@@ -946,10 +946,11 @@ fn closing_refs(message: &str) -> Vec<u32> {
         }
         if let Some(rest) = bare.strip_prefix("clt#") {
             let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
-            if armed && !digits.is_empty() {
-                if let Ok(id) = digits.parse() {
-                    ids.push(id);
-                }
+            if armed
+                && !digits.is_empty()
+                && let Ok(id) = digits.parse()
+            {
+                ids.push(id);
             }
             // Stay armed: "closes clt#3 clt#4" should close both.
             continue;
@@ -1005,12 +1006,12 @@ fn cmd_sync(ctx: &mut Ctx, args: cli::SyncArgs) -> Result<()> {
             let payload: Vec<&Task> = closed.iter().map(|(_, t)| t).collect();
             ctx.out_json(&serde_json::json!({ "dry_run": true, "closed": payload }));
         } else if closed.is_empty() {
-            let _ = anstream::println!("  Nothing to close in {} commit(s).", commits.len());
+            anstream::println!("  Nothing to close in {} commit(s).", commits.len());
         } else {
             for (sha, t) in &closed {
-                let _ = anstream::println!("  ✓ #{}  {}  ({sha})", t.id, t.title);
+                anstream::println!("  ✓ #{}  {}  ({sha})", t.id, t.title);
             }
-            let _ = anstream::println!("  (dry run — nothing written)");
+            anstream::println!("  (dry run — nothing written)");
         }
         return Ok(());
     }
@@ -1028,10 +1029,10 @@ fn cmd_sync(ctx: &mut Ctx, args: cli::SyncArgs) -> Result<()> {
         let payload: Vec<&Task> = closed.iter().map(|(_, t)| t).collect();
         ctx.out_json(&serde_json::json!({ "dry_run": false, "closed": payload }));
     } else if closed.is_empty() {
-        let _ = anstream::println!("  Nothing to close in {} commit(s).", commits.len());
+        anstream::println!("  Nothing to close in {} commit(s).", commits.len());
     } else {
         for (sha, t) in &closed {
-            let _ = anstream::println!("  ✓ #{}  {}  ({sha})", t.id, t.title);
+            anstream::println!("  ✓ #{}  {}  ({sha})", t.id, t.title);
         }
     }
     Ok(())
@@ -1050,14 +1051,14 @@ fn cmd_log(ctx: &mut Ctx, args: cli::LogArgs) -> Result<()> {
     }
 
     if entries.is_empty() {
-        let _ = anstream::println!("  No history yet.");
+        anstream::println!("  No history yet.");
         return Ok(());
     }
 
     for e in &entries {
         let who = e.actor.clone().unwrap_or_else(|| "you".into());
         let id = e.id.map(|i| format!("#{i}")).unwrap_or_default();
-        let _ = anstream::println!(
+        anstream::println!(
             "  {}  {:<8} {:<7} {:<5} {}",
             render::stamp(e.ts),
             who,
@@ -1080,7 +1081,7 @@ fn cmd_path(ctx: &Ctx) -> Result<()> {
             "shared": ctx.store.is_shared(),
         }));
     } else {
-        let _ = anstream::println!("{}", ctx.store.path().display());
+        anstream::println!("{}", ctx.store.path().display());
     }
     Ok(())
 }
@@ -1130,7 +1131,7 @@ fn cmd_share(ctx: &mut Ctx) -> Result<()> {
     }
 
     if already {
-        let _ = anstream::println!("  The task list is already tracked by git.");
+        anstream::println!("  The task list is already tracked by git.");
         return Ok(());
     }
 
@@ -1142,16 +1143,16 @@ fn cmd_share(ctx: &mut Ctx) -> Result<()> {
         return Ok(());
     }
 
-    let _ = anstream::println!("  The task list is no longer excluded. To share it:");
-    let _ = anstream::println!();
-    let _ = anstream::println!("    git add .clt && git commit -m \"track the clt task list\"");
-    let _ = anstream::println!();
+    anstream::println!("  The task list is no longer excluded. To share it:");
+    anstream::println!();
+    anstream::println!("    git add .clt && git commit -m \"track the clt task list\"");
+    anstream::println!();
     for line in [
         "tasks.json and hooks/ travel with the repo; the journal stays local,",
         "per .clt/.gitignore. Expect the occasional merge conflict in tasks.json —",
         "the format is line-oriented and meant to be resolved by hand.",
     ] {
-        let _ = anstream::println!("  {line}");
+        anstream::println!("  {line}");
     }
     Ok(())
 }
@@ -1174,17 +1175,17 @@ fn cmd_unshare(ctx: &mut Ctx) -> Result<()> {
         return Ok(());
     }
 
-    let _ = anstream::println!("  New commits will not carry the task list.");
+    anstream::println!("  New commits will not carry the task list.");
     if tracked {
         // Excluding a file git already tracks does nothing at all — the entry
         // only applies to untracked paths. Without this the command would look
         // like it worked and the list would keep getting committed.
-        let _ = anstream::println!();
-        let _ = anstream::println!("  It is still tracked, though. To stop committing it:");
-        let _ = anstream::println!();
-        let _ = anstream::println!("    git rm -r --cached .clt");
-        let _ = anstream::println!();
-        let _ = anstream::println!("  That leaves your tasks on disk and drops them from the index.");
+        anstream::println!();
+        anstream::println!("  It is still tracked, though. To stop committing it:");
+        anstream::println!();
+        anstream::println!("    git rm -r --cached .clt");
+        anstream::println!();
+        anstream::println!("  That leaves your tasks on disk and drops them from the index.");
     }
     Ok(())
 }
@@ -1226,12 +1227,12 @@ fn cmd_init(ctx: &Ctx) -> Result<()> {
         return Ok(());
     }
 
-    let _ = anstream::println!("  Task list ready at {}", ctx.store.path().display());
+    anstream::println!("  Task list ready at {}", ctx.store.path().display());
     if let Some(branch) = ctx.store.scope.branch() {
-        let _ = anstream::println!("  Tasks you add now are scoped to `{branch}`.");
+        anstream::println!("  Tasks you add now are scoped to `{branch}`.");
     }
-    let _ = anstream::println!("  Sample hook: {}", sample.display());
-    let _ = anstream::println!("  What's in .clt/: {}", readme.display());
+    anstream::println!("  Sample hook: {}", sample.display());
+    anstream::println!("  What's in .clt/: {}", readme.display());
     Ok(())
 }
 

@@ -141,10 +141,11 @@ impl FromStr for Location {
 /// The distinction matters for `clt scan`: scanned tasks are owned by the
 /// source comment that produced them and get closed when it disappears, while
 /// manual tasks are owned by you and are never touched by a scan.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Origin {
     /// Created by a human or an agent through the CLI or MCP.
+    #[default]
     Manual,
     /// Harvested from a `TODO(clt):` marker in the source.
     Scan {
@@ -152,12 +153,6 @@ pub enum Origin {
         /// its position, so a task survives the comment moving down the file.
         key: String,
     },
-}
-
-impl Default for Origin {
-    fn default() -> Self {
-        Origin::Manual
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

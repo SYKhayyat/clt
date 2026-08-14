@@ -4,6 +4,13 @@
 //! terminal and honours `NO_COLOR`/`CLICOLOR_FORCE`. That's not politeness —
 //! it's what makes `clt ls | grep` and `clt ls > file` produce something a
 //! human or a script can actually read.
+//!
+//! Nothing here checks the result of a write, and that is deliberate rather
+//! than sloppy: `anstream`'s macros return `()`, swallowing `BrokenPipe` and
+//! panicking on anything else. So `clt ls | head` — the reader closing the pipe
+//! after two lines — exits quietly on every platform, and a genuinely broken
+//! stdout is loud instead of silent. `tests/pipes.rs` pins that, because it is
+//! a property of a dependency's macro and would otherwise change under us.
 
 use anstyle::{AnsiColor, Color, Style};
 use chrono::{DateTime, Local, Utc};
@@ -44,11 +51,11 @@ pub fn dimmed(text: &str) -> String {
 
 pub fn warn(msg: &str) {
     let style = fg(AnsiColor::Yellow);
-    let _ = anstream::eprintln!("{}", paint(style, &format!("clt: {msg}")));
+    anstream::eprintln!("{}", paint(style, &format!("clt: {msg}")));
 }
 
 pub fn note(msg: &str) {
-    let _ = anstream::eprintln!("{}", paint(dim(), &format!("clt: {msg}")));
+    anstream::eprintln!("{}", paint(dim(), &format!("clt: {msg}")));
 }
 
 /// Compact relative time: `now`, `5m`, `3h`, `2d`, `6w`.
@@ -192,14 +199,14 @@ pub fn tasks(store: &Store, rows: &[Row<'_>], opts: &ListOpts) {
 
         line.push_str("  ");
         line.push_str(&paint(dim(), &cell.age));
-        let _ = anstream::println!("{}", line.trim_end());
+        anstream::println!("{}", line.trim_end());
     }
 }
 
 /// The line printed after a mutation, so you can see what you just did.
 pub fn changed(task: &Task) {
     let style = state_style(task.state);
-    let _ = anstream::println!(
+    anstream::println!(
         "  {} {} {}",
         paint(style, task.state.glyph()),
         paint(dim(), &format!("#{}", task.id)),
@@ -221,7 +228,7 @@ pub fn summary(open: usize, doing: usize, hidden_done: usize) {
     if hidden_done > 0 {
         parts.push(format!("{hidden_done} done (clt ls --done)"));
     }
-    let _ = anstream::println!("{}", paint(dim(), &format!("  {}", parts.join(" · "))));
+    anstream::println!("{}", paint(dim(), &format!("  {}", parts.join(" · "))));
 }
 
 /// What to print when the list is empty, which is most people's first contact
@@ -232,18 +239,18 @@ pub fn empty(branch: Option<&str>, filtered: bool) {
         None => "here".to_string(),
     };
     if filtered {
-        let _ = anstream::println!("  {}", paint(dim(), "Nothing matches that filter."));
-        let _ = anstream::println!("  {}", paint(dim(), "clt ls --all    every branch, every state"));
+        anstream::println!("  {}", paint(dim(), "Nothing matches that filter."));
+        anstream::println!("  {}", paint(dim(), "clt ls --all    every branch, every state"));
         return;
     }
-    let _ = anstream::println!("  Nothing {where_}.");
-    let _ = anstream::println!();
-    let _ = anstream::println!(
+    anstream::println!("  Nothing {where_}.");
+    anstream::println!();
+    anstream::println!(
         "  {}   {}",
         paint(bold(), "clt add \"the thing\""),
         paint(dim(), "file a task on this branch")
     );
-    let _ = anstream::println!(
+    anstream::println!(
         "  {}              {}",
         paint(bold(), "clt ls --all"),
         paint(dim(), "see every branch")
