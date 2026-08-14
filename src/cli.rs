@@ -258,7 +258,7 @@ pub struct ScanArgs {
 
 #[derive(Debug, Args)]
 pub struct SyncArgs {
-    /// Re-examine history from the beginning instead of since the last sync
+    /// Re-read the last 50 commits instead of only what is new since the last sync
     #[arg(long)]
     pub rescan: bool,
 
