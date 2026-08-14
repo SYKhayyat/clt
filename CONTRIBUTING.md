@@ -170,8 +170,11 @@ If agents should be able to call it too, add a tool to `mcp.rs` and a case to
 
 ## Testing
 
-108 tests, about two and a half minutes. Almost all of that is process spawning,
-and that is the design rather than an accident.
+108 tests: about 15 seconds on Linux, about two and a half minutes on Windows.
+Almost all of it is process spawning, and the platform gap is the cost of that
+— `git.rs` notes the same thing about startup, where each `git` invocation
+costs tens of milliseconds on Windows. It is the design rather than an
+accident, and worth knowing before you conclude your machine is broken.
 
 **Unit tests** live at the bottom of the module they test, in `mod tests`. Use
 them for pure logic: parsing a `Location`, bucketing a relative time, breaking

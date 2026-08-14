@@ -584,12 +584,14 @@ what each module owns, the invariants that must not break, and how to add a
 command end to end.
 
 ```sh
-cargo test                                    # 108 tests, ~2.5 min
+cargo test                                    # 108 tests: ~15s on Linux, ~2.5 min on Windows
 cargo clippy --all-targets -- -D warnings     # what CI gates on
 ```
 
-Most of that two and a half minutes is spawning real `git` and `clt` processes
-against real repositories, which is deliberate — see CONTRIBUTING.md.
+That gap is not a typo. Almost all of the runtime is spawning real `git` and
+`clt` processes against real repositories — which is deliberate, and which
+Windows charges roughly ten times as much for. See
+[CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Status
 
