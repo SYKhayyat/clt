@@ -48,6 +48,29 @@ fn git(cwd: &Path, args: &[&str]) -> Result<Option<String>> {
     if s.is_empty() { Ok(None) } else { Ok(Some(s)) }
 }
 
+/// Turns a path as git spells it into one the platform spells the same way.
+///
+/// Git answers in forward slashes everywhere, including on Windows, where
+/// everything we join onto its answer uses a backslash. Left alone the two meet
+/// inside a single string — `C:/code/app\.clt\tasks.json` — and that string is
+/// what `clt path` prints and what `clt path --json` hands to whatever is
+/// consuming it. Both separators work when *opening* the file, so this is
+/// cosmetic; it is fixed at the boundary anyway, because the alternative is
+/// every printing site remembering to tidy up after this one.
+///
+/// A no-op off Windows, where `/` is already the separator, and safe on it:
+/// `/` is not a legal character in a Windows filename.
+fn native(path: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        PathBuf::from(path.replace('/', "\\"))
+    }
+    #[cfg(not(windows))]
+    {
+        PathBuf::from(path)
+    }
+}
+
 /// Finds the repo containing `cwd`, if any.
 ///
 /// Process spawns dominate this tool's startup — on Windows each `git`
@@ -68,7 +91,7 @@ pub fn discover(cwd: &Path) -> Result<Option<Repo>> {
     let Some(root) = lines.next().map(str::trim).filter(|s| !s.is_empty()) else {
         return Ok(None);
     };
-    let root = PathBuf::from(root);
+    let root = native(root);
 
     // Git prints `--git-common-dir` relative to the *current directory*, so it
     // must be resolved against `cwd`, not the worktree root — those differ
@@ -79,7 +102,7 @@ pub fn discover(cwd: &Path) -> Result<Option<Repo>> {
         .filter(|s| !s.is_empty())
         .unwrap_or(".git");
     let common = {
-        let p = PathBuf::from(common);
+        let p = native(common);
         if p.is_absolute() { p } else { cwd.join(p) }
     };
 
@@ -275,5 +298,49 @@ pub struct Commit {
 impl Commit {
     pub fn short(&self) -> &str {
         &self.sha[..self.sha.len().min(7)]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_git_path_joins_without_mixing_separators() {
+        // The shape git hands us on Windows. Whatever we join onto it has to
+        // come out in one separator style, because this string gets printed.
+        let joined = native("C:/code/app").join(".clt").join("tasks.json");
+        let shown = joined.display().to_string();
+        assert!(
+            !(shown.contains('/') && shown.contains('\\')),
+            "mixed separators in {shown:?}"
+        );
+        assert!(shown.ends_with("tasks.json"));
+    }
+
+    #[test]
+    fn a_git_path_still_points_at_the_same_place() {
+        // Normalising must not change which file is meant, only how it reads.
+        assert_eq!(native("C:/code/app"), PathBuf::from("C:/code/app"));
+        assert_eq!(native("/home/x/app"), PathBuf::from("/home/x/app"));
+    }
+
+    #[test]
+    fn a_relative_git_dir_is_normalised_too() {
+        // `--git-common-dir` comes back relative in a plain repo.
+        assert_eq!(native(".git"), PathBuf::from(".git"));
+        let shown = native("../.git/worktrees/x").display().to_string();
+        assert!(!(shown.contains('/') && shown.contains('\\')), "{shown:?}");
+    }
+
+    #[test]
+    fn short_sha_survives_a_short_sha() {
+        // Slicing a 40-char sha to 7 is obvious; slicing a hand-written 4-char
+        // one to 7 is a panic, which is why `short` takes a min.
+        let c = Commit {
+            sha: "abc".into(),
+            message: String::new(),
+        };
+        assert_eq!(c.short(), "abc");
     }
 }
