@@ -35,6 +35,11 @@ $ clt
 - [Troubleshooting](#troubleshooting)
 - [Contributing](#contributing)
 
+Longer form: **[docs/ONBOARDING.md](docs/ONBOARDING.md)** for adopting `clt` in a
+project you already have and wiring an agent to it, and
+**[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)** when something is not
+behaving.
+
 ## Why this instead of Taskwarrior / todo.txt / dstask
 
 Those are all better than this at being a general-purpose todo list, and if
@@ -550,6 +555,17 @@ for `move`, `remove` for `rm`.
 
 ## Troubleshooting
 
+The five that come up most. Everything else — MCP wiring, hooks, worktrees,
+detached HEAD, rebases, locks, platform differences — is in
+[docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
+Two commands answer most questions before you read anything:
+
+```sh
+clt path --json      # which list, which branch, shared or not
+clt ls --all         # every task on every branch
+```
+
 **My tasks vanished.** Almost always a branch switch — they're scoped, and
 `clt ls --all` will show them with a branch column. If the branch they were
 filed on has been deleted, `clt ls --orphaned` finds them and
@@ -565,12 +581,10 @@ you're looking at.
 file `git ls-files` lists, and not excluded by `.cltignore`. `clt scan -n`
 shows what a scan would do without writing anything.
 
-**`clt scan` filed a duplicate.** Two markers with byte-identical text are one
-task by design. Make the text specific.
-
 **It says the lock is held and nothing is running.** A stale `.clt/lock` from a
-process that died mid-write. Deleting it is safe: the store itself is written
-by atomic rename, so there is never a half-written `tasks.json` behind it.
+process that died mid-write. Locks expire after 60 seconds, and deleting it is
+safe: the store itself is written by atomic rename, so there is never a
+half-written `tasks.json` behind it.
 
 **A hand edit broke the file.** `clt` repairs duplicate ids, missing parents and
 parent cycles on load, and says on stderr what it changed. If the JSON itself is
