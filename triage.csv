@@ -1,0 +1,5 @@
+number,title,url,D,R,why,risk
+1,[Medium/bug] Journal rotate+append unlocked concurrent runs lose history,https://github.com/SYKhayyat/clt/issues/1,2,4,Rotate under lock; concurrent runs silently drop history,Silent history loss
+2,[Low/bug] sync advances watermark when history lookup failed,https://github.com/SYKhayyat/clt/issues/2,2,4,Gate advance on success; rebase silently skips commits,Silent skipped commits
+3,[Low/perf] scan reads files it then discards,https://github.com/SYKhayyat/clt/issues/3,1,1,Filter before reading; wasted IO only,Wasted IO only
+4,[Low/bug] MCP read tools take write lock and rewrite file,https://github.com/SYKhayyat/clt/issues/4,2,3,Lazy migration; contention+rewrite is visible,Visible contention
