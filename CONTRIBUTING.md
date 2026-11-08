@@ -254,6 +254,46 @@ the explanatory comments line up with what they explain, and rustfmt's default
 chain width reflows a good deal of it into something harder to read. Match the
 surrounding style rather than reaching for the formatter.
 
+## Cutting a release
+
+A release is a tag and a changelog entry, in that order written the other way
+round: write the entry first, because it is the only place the reasoning of the
+last however many commits gets summarised for someone who was not there.
+
+```sh
+# 1. versions agree: Cargo.toml and the CHANGELOG heading
+grep -n '^version' Cargo.toml
+head -20 CHANGELOG.md
+
+# 2. the gate, exactly as CI runs it
+cargo build --release --locked
+cargo test --locked
+cargo clippy --all-targets --locked -- -D warnings
+./target/release/comtai --version
+
+# 3. the tag, annotated, then published
+git tag -a v0.1.0 -m "comtai 0.1.0"
+git push origin v0.1.0
+gh release create v0.1.0 --title "comtai 0.1.0" --notes-file <(sed -n '/^## \[0.1.0\]/,/^## \[/p' CHANGELOG.md)
+```
+
+Notes on the parts that bite:
+
+- **The tag is what `cargo install --git ... --tag v0.1.0` resolves**, so it must
+  name a commit that builds on its own, not one that needs the next commit.
+- **`Cargo.toml` and the changelog heading must agree.** If they disagree the
+  changelog is lying about what `comtai --version` prints, and that is the first
+  thing a bug report quotes.
+- **The release profile is not the test profile.** `--release` turns on
+  `panic = "abort"`, LTO and stripping, so the end-to-end line above is not
+  decoration.
+- **The on-disk format has its own version** (`"version": 1` in `tasks.json`).
+  Bumping it obliges you to write the read-side migration for lists already on
+  disk, and to say so in the changelog — that is the number users' data depends
+  on, not the crate version.
+- **Nothing is published to crates.io yet.** The name is free there; publishing
+  means deciding what the package is called and keeping it in step with the tag.
+
 ## Style
 
 The prevailing convention here is that comments answer *why*, and they are

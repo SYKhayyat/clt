@@ -84,6 +84,9 @@ cargo install --path .
 Both put the binary in `~/.cargo/bin`. If `comtai --version` comes back "command
 not found", that directory isn't on your `PATH` yet.
 
+Both of those follow `main`. To pin a release instead, add `--tag v0.1.0`; what
+changed between versions is in [CHANGELOG.md](CHANGELOG.md).
+
 There is no setup step. The first task you file creates `.comtai/` and excludes it
 from git. `comtai init` is optional and only adds the extras — a sample hook and a
 README describing the directory — for when you want them.
