@@ -45,9 +45,27 @@ impl Lock {
     /// Blocks until the lock is ours, [`WAIT_LIMIT`] elapses, or the directory
     /// turns out not to be writable.
     pub fn acquire(dir: &Path) -> Result<Self> {
+        Self::acquire_named(dir, NAME)
+    }
+
+    /// The same lock, under a file name of its own.
+    ///
+    /// Two files here have two critical sections. The task list has the one this
+    /// type was written for, and the audit log has a second: rotation renames
+    /// the live log onto the single previous generation, so an append racing
+    /// another rotation replaces a generation rather than shelving it (#1).
+    ///
+    /// It cannot be the same file. `Ctx::commit` appends while it still holds
+    /// the store's lock, so anything it needs must be a *different* lock, and
+    /// the MCP writers append after releasing theirs — a discipline that keeps
+    /// hooks and their network calls out of the critical section and that this
+    /// module must not quietly depend on. Acquisition order is always
+    /// store-then-journal and never the reverse, so there is no cycle to
+    /// deadlock on.
+    pub fn acquire_named(dir: &Path, name: &str) -> Result<Self> {
         std::fs::create_dir_all(dir)
             .with_context(|| format!("creating {}", dir.display()))?;
-        let path = dir.join(NAME);
+        let path = dir.join(name);
 
         let deadline = SystemTime::now() + WAIT_LIMIT;
         // Poll rather than back off exponentially: the expected wait is one
