@@ -15,6 +15,17 @@ use std::process::{Command, Stdio};
 
 /// Sends each request and returns one parsed response per line of stdout.
 fn converse(dir: &std::path::Path, requests: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    converse_with_stderr(dir, requests).0
+}
+
+/// The same, keeping what the server said on stderr.
+///
+/// Diagnostics belong there by design — stdout is the frame stream — so a note
+/// about a damaged file is only observable on this channel.
+fn converse_with_stderr(
+    dir: &std::path::Path,
+    requests: &[serde_json::Value],
+) -> (Vec<serde_json::Value>, String) {
     let mut child = Command::new(CLT)
         .arg("mcp")
         .current_dir(dir)
@@ -33,6 +44,7 @@ fn converse(dir: &std::path::Path, requests: &[serde_json::Value]) -> Vec<serde_
     }
 
     let stdout = child.stdout.take().expect("stdout");
+    let mut stderr = child.stderr.take().expect("stderr");
     let frames: Vec<serde_json::Value> = BufReader::new(stdout)
         .lines()
         .map(|l| l.expect("reading a frame"))
@@ -43,8 +55,12 @@ fn converse(dir: &std::path::Path, requests: &[serde_json::Value]) -> Vec<serde_
         })
         .collect();
 
+    // Drained after stdout reaches EOF, so a full pipe cannot wedge the child.
+    let mut said = String::new();
+    std::io::Read::read_to_string(&mut stderr, &mut said).expect("reading stderr");
+
     child.wait().expect("waiting for clt mcp");
-    frames
+    (frames, said)
 }
 
 fn call(id: u64, tool: &str, arguments: serde_json::Value) -> serde_json::Value {
@@ -248,5 +264,79 @@ fn notifications_are_not_answered() {
         2,
         "exactly two answerable requests were sent: {frames:?}"
     );
+    cleanup(&dir);
+}
+
+/// A read must not write the list, and must say what it worked around (#4).
+///
+/// `clt_list` and `clt_search` are the tools an agent polls in a loop. They
+/// opened read-only, and then saved anyway whenever a repair was pending —
+/// `save` borrows the write lock when the store has none, so a *read* queued
+/// behind real writers, could sit out the ten-second wait for one, and failed
+/// outright on a checkout nobody can write to. All of that for a file that was
+/// being fixed up for somebody else's benefit, since the repair was already
+/// applied to the answer.
+#[test]
+fn a_read_tool_repairs_in_its_answer_and_leaves_the_file_alone() {
+    let dir = repo("mcp-read-no-write");
+    write(&dir, "code.txt", "hello\n");
+    git_ok(&dir, &["add", "-A"]);
+    git_ok(&dir, &["commit", "-qm", "init"]);
+    clt_ok(&dir, &["add", "the first thing"]);
+
+    // Damage it the way a hand edit does: two tasks claiming one id.
+    let path = dir.join(".clt/tasks.json");
+    let mut data: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let mut twin = data["tasks"][0].clone();
+    twin["title"] = serde_json::json!("a second thing under the same id");
+    data["tasks"].as_array_mut().unwrap().push(twin);
+    std::fs::write(&path, serde_json::to_string_pretty(&data).unwrap()).unwrap();
+    let damaged = std::fs::read(&path).unwrap();
+
+    let (frames, said) = converse_with_stderr(
+        &dir,
+        &[
+            initialize(),
+            call(2, "clt_list", serde_json::json!({ "all": true })),
+        ],
+    );
+    ok_text(&frames[1]);
+    assert!(
+        said.contains("renumbered"),
+        "the repair must be reported on stderr, got: {said:?}"
+    );
+    assert_eq!(
+        std::fs::read(&path).unwrap(),
+        damaged,
+        "a read rewrote the task list"
+    );
+
+    // And the repair is not lost: it is applied to what the read answers, and
+    // the next call that was going to write anyway carries it to disk.
+    let (frames, _) = converse_with_stderr(
+        &dir,
+        &[
+            initialize(),
+            call(2, "clt_add", serde_json::json!({ "title": "and a third" })),
+        ],
+    );
+    ok_text(&frames[1]);
+
+    let after: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    let ids: Vec<u64> = after["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["id"].as_u64().unwrap())
+        .collect();
+    let unique: std::collections::HashSet<u64> = ids.iter().copied().collect();
+    assert_eq!(
+        ids.len(),
+        unique.len(),
+        "the first write must carry the repair to disk; ids were {ids:?}"
+    );
+
     cleanup(&dir);
 }

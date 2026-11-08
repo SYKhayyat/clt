@@ -254,7 +254,24 @@ fn open(global: bool, access: Access) -> Result<Store> {
         let cwd = std::env::current_dir().context("reading the current directory")?;
         Store::open(&cwd, access)?
     };
-    if store.migrated {
+
+    // Repairs and imports are reported on **stderr**, the same channel and the
+    // same words the CLI uses. They were dropped here entirely before, which
+    // mattered more once a read stopped persisting them (below): the note is
+    // then the only sign anybody gets that the file on disk is damaged.
+    for warning in &store.warnings {
+        crate::render::note(warning);
+    }
+
+    // A read does not write (#4). `clt_list` and `clt_search` are the two tools
+    // an agent polls in a loop, and they opened with `Access::Read` and then
+    // saved anyway whenever a repair was pending — `save` borrows the write
+    // lock when the store has none, so a *read* queued behind real writers,
+    // could sit out the ten-second wait, and failed outright on a checkout
+    // nobody can write to. The repair is already applied to everything this
+    // store answers; committing it to disk belongs to the next call that was
+    // going to write anyway.
+    if store.migrated && access == Access::Write {
         store.save()?;
     }
     Ok(store)

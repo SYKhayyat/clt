@@ -308,6 +308,12 @@ Exposes `clt_list`, `clt_add`, `clt_edit`, `clt_close`, `clt_start`,
 `clt_reopen` and `clt_search`. Changes are attributed to `agent` unless
 `CLT_ACTOR` says otherwise.
 
+`clt_list` and `clt_search` are reads and never take the write lock. If the
+file on disk needs a repair — a duplicate id, a parent that is not there — the
+repair is applied to what the tool answers, reported on stderr, and written by
+the next call that changes something. A read must not queue behind a writer, or
+fail on a checkout nobody can write to, to tidy a file up for later.
+
 `clt_edit` matters more than it looks: without it an agent that files a vague
 task can only close it and file a replacement, which throws away its history.
 
