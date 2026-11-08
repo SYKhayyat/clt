@@ -268,8 +268,11 @@ Recognises `close(s|d)`, `fix(es|ed)`, `resolve(s|d)`. A bare `clt#3` mention
 doesn't close anything.
 
 `clt sync` reads only history it hasn't seen before, remembering where it got
-to in `last_commit`. `--rescan` ignores that mark and re-reads the most recent
-50 commits, which is what you want after a rebase rewrote the shas it recorded.
+to in `last_commit`. If that mark points at a commit this repository no longer
+has — what a rebase or a force-push leaves behind — the sync stops and says so
+rather than closing nothing and moving the mark forward, which would skip the
+commits in between for good. `--rescan` ignores the mark and re-reads the most
+recent 50 commits, which is the repair in that situation.
 The same 50-commit ceiling applies to the very first sync in a repo, so a
 `closes clt#3` buried deeper than that in existing history is not picked up —
 close it by hand.

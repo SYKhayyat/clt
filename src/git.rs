@@ -25,8 +25,23 @@ pub struct Repo {
 /// Runs a git command in `cwd`, returning trimmed stdout on success.
 ///
 /// Returns `Ok(None)` for a non-zero exit (the "not a repo" / "detached HEAD"
-/// signal) and `Err` only when git could not be run at all.
+/// signal) and `Err` only when git could not be run at all. Empty output is
+/// folded into `None` as well, because for almost every caller here it means
+/// the same thing — `rev-parse` on an unborn HEAD, `check-ignore` on a path
+/// nobody ignores. [`git_answer`] is the version for the callers where the two
+/// are not the same thing.
 fn git(cwd: &Path, args: &[&str]) -> Result<Option<String>> {
+    Ok(git_answer(cwd, args)?.filter(|s| !s.is_empty()))
+}
+
+/// [`git`], except that printing nothing is an answer rather than a silence.
+///
+/// `git log <mark>..HEAD` with nothing new exits 0 and prints nothing, and that
+/// is the *ordinary* case for `clt sync` on a repository nobody has committed
+/// to since. Reading it the way `git` does — as a failure — makes every quiet
+/// sync indistinguishable from a walk that never happened, which is exactly the
+/// distinction #2 is about.
+fn git_answer(cwd: &Path, args: &[&str]) -> Result<Option<String>> {
     let out = Command::new("git")
         .args(args)
         .current_dir(cwd)
@@ -44,8 +59,7 @@ fn git(cwd: &Path, args: &[&str]) -> Result<Option<String>> {
     if !out.status.success() {
         return Ok(None);
     }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    if s.is_empty() { Ok(None) } else { Ok(Some(s)) }
+    Ok(Some(String::from_utf8_lossy(&out.stdout).trim().to_string()))
 }
 
 /// Turns a path as git spells it into one the platform spells the same way.
@@ -225,7 +239,15 @@ impl Repo {
     /// Commits reachable from HEAD but not from `since`, oldest first.
     ///
     /// Used by commit linkage. `since` is typically the last commit we scanned.
-    pub fn commits_since(&self, since: Option<&str>) -> Result<Vec<Commit>> {
+    ///
+    /// `None` means **git could not answer**, which is not the same as "there
+    /// are no commits" (#2). A `since` that no longer exists — the ordinary
+    /// result of a rebase or a force-push — makes `git log <sha>..HEAD` fail,
+    /// and folding that failure into an empty history let `clt sync` advance
+    /// its watermark to HEAD and skip every commit in between for ever. An
+    /// unborn HEAD is the other way round: it has no commits to walk, and an
+    /// empty answer is the truth.
+    pub fn commits_since(&self, since: Option<&str>) -> Result<Option<Vec<Commit>>> {
         let range = match since {
             Some(sha) => format!("{sha}..HEAD"),
             None => "HEAD".to_string(),
@@ -240,8 +262,14 @@ impl Repo {
             vec!["log", "--reverse", "-n", "50", fmt, &range]
         };
 
-        let Some(out) = git(&self.root, &args)? else {
-            return Ok(Vec::new());
+        let Some(out) = git_answer(&self.root, &args)? else {
+            // git refused. An unborn HEAD is the one refusal that is an answer:
+            // there is no history at all, so there is nothing to walk.
+            return if since.is_none() && self.head()?.is_none() {
+                Ok(Some(Vec::new()))
+            } else {
+                Ok(None)
+            };
         };
 
         let mut commits = Vec::new();
@@ -260,7 +288,7 @@ impl Repo {
                 message: format!("{subject}\n{body}"),
             });
         }
-        Ok(commits)
+        Ok(Some(commits))
     }
 
     /// Every local branch name.

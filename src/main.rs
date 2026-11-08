@@ -972,7 +972,21 @@ fn cmd_sync(ctx: &mut Ctx, args: cli::SyncArgs) -> Result<()> {
     } else {
         ctx.store.last_commit().map(str::to_owned)
     };
-    let commits = repo.commits_since(since.as_deref())?;
+    let commits = match repo.commits_since(since.as_deref())? {
+        Some(commits) => commits,
+        // The mark names a commit git cannot find, so it cannot say what came
+        // after it. Closing nothing and advancing the mark to HEAD would claim
+        // to have read commits nobody looked at, and the next sync would start
+        // from there — the skip is permanent and silent (#2). Say so instead,
+        // and leave the mark alone so `--rescan` is a choice rather than a
+        // repair.
+        None => bail!(
+            "git cannot list the commits since {}, so nothing was closed and the mark is unchanged.\n\
+             A rebase or a force-push rewrites the commits `clt sync` records.\n\
+             `clt sync --rescan` re-reads the most recent 50 commits instead.",
+            since.as_deref().unwrap_or("the last sync")
+        ),
+    };
 
     let mut closed = Vec::new();
     let mut entries = Vec::new();

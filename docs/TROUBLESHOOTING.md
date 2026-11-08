@@ -295,11 +295,18 @@ clt sync -n          # dry run
 clt sync --rescan    # ignore the mark and re-read the most recent 50 commits
 ```
 
-### After a rebase, sync stopped working
+### After a rebase, sync says it cannot list commits since …
+
+```
+clt sync: git cannot list the commits since 1a2b3c4, so nothing was closed and
+the mark is unchanged.
+```
 
 A rebase rewrites shas, so the `last_commit` mark points at a commit that no
-longer exists on the branch. `clt sync --rescan` ignores the mark and re-reads
-the last 50 commits. That is what `--rescan` is for.
+longer exists on the branch. The sync refuses rather than closing nothing and
+marching the mark forward — the commits either side of the rewrite would then
+never be read. `clt sync --rescan` ignores the mark and re-reads the last 50
+commits. That is what `--rescan` is for.
 
 ### An old `closes clt#3` deep in history was never picked up
 
