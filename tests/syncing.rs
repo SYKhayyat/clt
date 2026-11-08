@@ -1,4 +1,4 @@
-//! `clt sync` and the mark it leaves behind for the next run.
+//! `comtai sync` and the mark it leaves behind for the next run.
 //!
 //! `tasks.json` records the last commit the sync looked at, and the next sync
 //! walks from there. That mark is the only thing standing between routine use
@@ -11,9 +11,9 @@ use common::*;
 
 use std::path::Path;
 
-/// The commit `clt sync` says it got to.
+/// The commit `comtai sync` says it got to.
 fn watermark(dir: &Path) -> Option<String> {
-    let raw = std::fs::read_to_string(dir.join(".clt/tasks.json")).unwrap();
+    let raw = std::fs::read_to_string(dir.join(".comtai/tasks.json")).unwrap();
     let data: serde_json::Value = serde_json::from_str(&raw).unwrap();
     data["last_commit"].as_str().map(str::to_owned)
 }
@@ -22,7 +22,7 @@ fn watermark(dir: &Path) -> Option<String> {
 /// no longer has. `tasks.json` is documented as hand-editable, and this is the
 /// state a colleague's rebase puts a checkout in after the old objects are gone.
 fn put_watermark(dir: &Path, sha: &str) {
-    let path = dir.join(".clt/tasks.json");
+    let path = dir.join(".comtai/tasks.json");
     let mut data: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
     data["last_commit"] = serde_json::Value::String(sha.to_string());
@@ -44,14 +44,14 @@ fn a_mark_that_names_no_commit_closes_nothing_and_keeps_the_mark() {
     git_ok(&dir, &["commit", "-qm", "init"]);
 
     // A task the first sync closes, so the store records a mark at all.
-    clt_ok(&dir, &["add", "the first thing"]);
+    comtai_ok(&dir, &["add", "the first thing"]);
     write(&dir, "code.txt", "two\n");
     git_ok(&dir, &["add", "-A"]);
     git_ok(
         &dir,
-        &["commit", "-qm", "feat: land the first thing\n\ncloses clt#1"],
+        &["commit", "-qm", "feat: land the first thing\n\ncloses comtai#1"],
     );
-    clt_ok(&dir, &["sync"]);
+    comtai_ok(&dir, &["sync"]);
 
     let mark = watermark(&dir);
     assert!(mark.is_some(), "the first sync must record where it got to");
@@ -62,17 +62,17 @@ fn a_mark_that_names_no_commit_closes_nothing_and_keeps_the_mark() {
     );
 
     // A second task, and history that names it after the mark went stale.
-    clt_ok(&dir, &["add", "the second thing"]);
+    comtai_ok(&dir, &["add", "the second thing"]);
     write(&dir, "code.txt", "three\n");
     git_ok(&dir, &["add", "-A"]);
     git_ok(
         &dir,
-        &["commit", "-qm", "feat: land the second thing\n\ncloses clt#2"],
+        &["commit", "-qm", "feat: land the second thing\n\ncloses comtai#2"],
     );
     let gone = "0123456789abcdef0123456789abcdef01234567";
     put_watermark(&dir, gone);
 
-    let out = clt(&dir, &["sync"]);
+    let out = comtai(&dir, &["sync"]);
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(
         !out.status.success(),
@@ -96,7 +96,7 @@ fn a_mark_that_names_no_commit_closes_nothing_and_keeps_the_mark() {
 
     // And `--rescan` is the repair the message promised: the mark is ignored,
     // the last 50 commits are re-read, and the close lands.
-    clt_ok(&dir, &["sync", "--rescan"]);
+    comtai_ok(&dir, &["sync", "--rescan"]);
     assert_eq!(
         task_titled(&all_tasks(&dir), "the second thing")["state"],
         "done",

@@ -1,6 +1,6 @@
 //! State transitions, whichever command performs them.
 //!
-//! There are two doors to the same room — `clt done 3` and `clt edit 3 --state
+//! There are two doors to the same room — `comtai done 3` and `comtai edit 3 --state
 //! done` — and they used to have different rules. The second skipped the
 //! subtree cascade, fired no hook, left a stale `closed_by` in place, and wrote
 //! the journal entry as "edit", so the audit log could not tell you a task had
@@ -14,9 +14,9 @@ use std::path::Path;
 
 fn tree(name: &str) -> std::path::PathBuf {
     let dir = repo(name);
-    clt_ok(&dir, &["add", "parent"]);
-    clt_ok(&dir, &["add", "child", "--parent", "1"]);
-    clt_ok(&dir, &["add", "grandchild", "--parent", "2"]);
+    comtai_ok(&dir, &["add", "parent"]);
+    comtai_ok(&dir, &["add", "child", "--parent", "1"]);
+    comtai_ok(&dir, &["add", "grandchild", "--parent", "2"]);
     dir
 }
 
@@ -30,7 +30,7 @@ fn states(dir: &Path) -> Vec<String> {
 }
 
 fn journal_actions(dir: &Path) -> Vec<String> {
-    clt_json(dir, &["log"])
+    comtai_json(dir, &["log"])
         .as_array()
         .unwrap()
         .iter()
@@ -41,10 +41,10 @@ fn journal_actions(dir: &Path) -> Vec<String> {
 #[test]
 fn edit_state_done_cascades_exactly_like_done() {
     let via_edit = tree("state-edit");
-    clt_ok(&via_edit, &["edit", "1", "--state", "done"]);
+    comtai_ok(&via_edit, &["edit", "1", "--state", "done"]);
 
     let via_done = tree("state-done");
-    clt_ok(&via_done, &["done", "1"]);
+    comtai_ok(&via_done, &["done", "1"]);
 
     assert_eq!(states(&via_edit), vec!["done", "done", "done"]);
     assert_eq!(
@@ -60,7 +60,7 @@ fn edit_state_done_cascades_exactly_like_done() {
 #[test]
 fn edit_state_journals_under_the_transition_not_as_an_edit() {
     let dir = tree("state-journal");
-    clt_ok(&dir, &["edit", "1", "--state", "done"]);
+    comtai_ok(&dir, &["edit", "1", "--state", "done"]);
 
     let actions = journal_actions(&dir);
     assert_eq!(
@@ -78,7 +78,7 @@ fn edit_state_journals_under_the_transition_not_as_an_edit() {
 #[test]
 fn editing_a_field_and_the_state_records_both() {
     let dir = tree("state-both");
-    clt_ok(&dir, &["edit", "3", "--title", "renamed", "--state", "doing"]);
+    comtai_ok(&dir, &["edit", "3", "--title", "renamed", "--state", "doing"]);
 
     let actions = journal_actions(&dir);
     assert!(actions.contains(&"edit".to_string()), "{actions:?}");
@@ -98,9 +98,9 @@ fn reopening_through_edit_clears_the_commit_that_closed_it() {
     write(&dir, "code.txt", "hello\n");
     git_ok(&dir, &["add", "-A"]);
     git_ok(&dir, &["commit", "-qm", "init"]);
-    clt_ok(&dir, &["add", "fix the race"]);
-    git_ok(&dir, &["commit", "-qm", "fix it\n\ncloses clt#1", "--allow-empty"]);
-    clt_ok(&dir, &["sync"]);
+    comtai_ok(&dir, &["add", "fix the race"]);
+    git_ok(&dir, &["commit", "-qm", "fix it\n\ncloses comtai#1", "--allow-empty"]);
+    comtai_ok(&dir, &["sync"]);
 
     let tasks = all_tasks(&dir);
     assert!(
@@ -108,7 +108,7 @@ fn reopening_through_edit_clears_the_commit_that_closed_it() {
         "fixture: sync should have recorded the closing commit"
     );
 
-    clt_ok(&dir, &["edit", "1", "--state", "todo"]);
+    comtai_ok(&dir, &["edit", "1", "--state", "todo"]);
     let tasks = all_tasks(&dir);
     let t = task_titled(&tasks, "fix the race");
     assert_eq!(t["state"], "todo");
@@ -124,10 +124,10 @@ fn reopening_a_parent_does_not_reopen_its_subtasks() {
     // Closing cascades; reopening deliberately does not. Reopening a parent to
     // add one more subtask should not undo the ones already finished.
     let dir = tree("state-reopen");
-    clt_ok(&dir, &["done", "1"]);
+    comtai_ok(&dir, &["done", "1"]);
     assert_eq!(states(&dir), vec!["done", "done", "done"]);
 
-    clt_ok(&dir, &["edit", "1", "--state", "todo"]);
+    comtai_ok(&dir, &["edit", "1", "--state", "todo"]);
     assert_eq!(
         states(&dir),
         vec!["todo", "done", "done"],

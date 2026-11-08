@@ -4,8 +4,8 @@
 .idea/
 .vscode/
 
-# The task list itself lives in .clt/ and is deliberately never committed —
-# see the module docs in src/store.rs. `clt init` also writes it into
+# The task list itself lives in .comtai/ and is deliberately never committed —
+# see the module docs in src/store.rs. `comtai init` also writes it into
 # .git/info/exclude; this is the belt to that suspenders, for anyone who
 # clones and runs the tool without initialising.
-.clt/
+.comtai/

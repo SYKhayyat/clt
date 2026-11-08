@@ -1,4 +1,4 @@
-//! clt — branch-scoped tasks that live in your repo.
+//! comtai — branch-scoped tasks that live in your repo.
 
 mod cli;
 mod git;
@@ -26,7 +26,7 @@ fn main() -> ExitCode {
         Err(e) => {
             // `{:#}` prints the whole anyhow chain on one line, so the cause is
             // visible without a --verbose flag nobody remembers.
-            anstream::eprintln!("clt: {e:#}");
+            anstream::eprintln!("comtai: {e:#}");
             ExitCode::FAILURE
         }
     }
@@ -108,7 +108,7 @@ fn run() -> Result<()> {
     }
 
     // A migration must land on disk even when the command itself only reads,
-    // or a bare `clt` re-imports the legacy file on every invocation.
+    // or a bare `comtai` re-imports the legacy file on every invocation.
     if store.migrated {
         store.save()?;
     }
@@ -230,7 +230,7 @@ fn cmd_list(ctx: &mut Ctx, args: cli::ListArgs) -> Result<()> {
 /// Tasks pinned to a branch git no longer has.
 ///
 /// Kept off the default path deliberately: answering it costs a `for-each-ref`,
-/// and bare `clt` is run dozens of times a day on a tool whose startup budget
+/// and bare `comtai` is run dozens of times a day on a tool whose startup budget
 /// is already two process spawns.
 fn cmd_list_orphaned(ctx: &mut Ctx, args: &cli::ListArgs) -> Result<()> {
     let Some(repo) = ctx.store.scope.repo() else {
@@ -276,7 +276,7 @@ fn cmd_list_orphaned(ctx: &mut Ctx, args: &cli::ListArgs) -> Result<()> {
         orphans.len(),
         if orphans.len() == 1 { "" } else { "s" }
     );
-    anstream::println!("  Rescue them with `clt scope <ID> --repo` or `--branch <NAME>`.");
+    anstream::println!("  Rescue them with `comtai scope <ID> --repo` or `--branch <NAME>`.");
     Ok(())
 }
 
@@ -402,9 +402,9 @@ pub fn state_event(state: State) -> &'static str {
 /// rule, clearing a stale `closed_by`, skipping tasks already in that state,
 /// and the journal action it records.
 ///
-/// Everything that closes a task routes through here — `clt done`, `clt edit
+/// Everything that closes a task routes through here — `comtai done`, `comtai edit
 /// --state`, and the MCP tools. Each used to carry its own copy, and they had
-/// drifted: `clt edit --state done` did not cascade, fired no hook, and
+/// drifted: `comtai edit --state done` did not cascade, fired no hook, and
 /// journalled as "edit". Three transcriptions of one rule is three chances to
 /// get it wrong, so there is now only one.
 ///
@@ -514,7 +514,7 @@ fn cmd_rm(ctx: &mut Ctx, args: cli::RmArgs) -> Result<()> {
         if kids > 0 && !args.recursive {
             bail!(
                 "#{id} has {kids} subtask{} — pass -r to delete them too, \
-                 or `clt move` them out first",
+                 or `comtai move` them out first",
                 if kids == 1 { "" } else { "s" }
             );
         }
@@ -571,7 +571,7 @@ fn cmd_edit(ctx: &mut Ctx, args: cli::EditArgs) -> Result<()> {
     ctx.store.require(args.id)?;
 
     // Whether any plain field changed, as opposed to only the state. It decides
-    // whether an "edit" belongs in the journal at all: `clt edit 3 --state done`
+    // whether an "edit" belongs in the journal at all: `comtai edit 3 --state done`
     // is a close, and recording it as an edit is what made the audit log lie
     // about how a task got closed.
     let edits = args.title.is_some() || args.note.is_some() || location.is_some();
@@ -608,7 +608,7 @@ fn cmd_edit(ctx: &mut Ctx, args: cli::EditArgs) -> Result<()> {
         );
     }
 
-    // A state change goes through the same path as `clt done`/`start`/`reopen`,
+    // A state change goes through the same path as `comtai done`/`start`/`reopen`,
     // so it cascades, clears `closed_by`, journals under its own verb and fires
     // the matching hook.
     let mut state_changed = Vec::new();
@@ -779,7 +779,7 @@ fn describe_scope(branch: Option<&str>) -> String {
 
 fn cmd_scan(ctx: &mut Ctx, args: cli::ScanArgs) -> Result<()> {
     let Some(repo) = ctx.store.scope.repo().cloned() else {
-        bail!("clt scan needs a git repository (it reads the working tree via git ls-files)");
+        bail!("comtai scan needs a git repository (it reads the working tree via git ls-files)");
     };
 
     let ignores = scan::load_ignores(&repo.root);
@@ -927,7 +927,7 @@ const CLOSING_WORDS: &[&str] = &[
     "close", "closes", "closed", "fix", "fixes", "fixed", "resolve", "resolves", "resolved",
 ];
 
-/// Extracts ids from `closes clt#3, clt#4` style references.
+/// Extracts ids from `closes comtai#3, comtai#4` style references.
 fn closing_refs(message: &str) -> Vec<u32> {
     let tokens: Vec<String> = message
         .split_whitespace()
@@ -942,7 +942,7 @@ fn closing_refs(message: &str) -> Vec<u32> {
             armed = true;
             continue;
         }
-        if let Some(rest) = bare.strip_prefix("clt#") {
+        if let Some(rest) = bare.strip_prefix("comtai#") {
             let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
             if armed
                 && !digits.is_empty()
@@ -950,10 +950,10 @@ fn closing_refs(message: &str) -> Vec<u32> {
             {
                 ids.push(id);
             }
-            // Stay armed: "closes clt#3 clt#4" should close both.
+            // Stay armed: "closes comtai#3 comtai#4" should close both.
             continue;
         }
-        // Any other word breaks the association, so "closes the bug in clt#3"
+        // Any other word breaks the association, so "closes the bug in comtai#3"
         // doesn't silently close #3.
         armed = false;
     }
@@ -962,7 +962,7 @@ fn closing_refs(message: &str) -> Vec<u32> {
 
 fn cmd_sync(ctx: &mut Ctx, args: cli::SyncArgs) -> Result<()> {
     let Some(repo) = ctx.store.scope.repo().cloned() else {
-        bail!("clt sync needs a git repository");
+        bail!("comtai sync needs a git repository");
     };
 
     let since = if args.rescan {
@@ -980,8 +980,8 @@ fn cmd_sync(ctx: &mut Ctx, args: cli::SyncArgs) -> Result<()> {
         // repair.
         None => bail!(
             "git cannot list the commits since {}, so nothing was closed and the mark is unchanged.\n\
-             A rebase or a force-push rewrites the commits `clt sync` records.\n\
-             `clt sync --rescan` re-reads the most recent 50 commits instead.",
+             A rebase or a force-push rewrites the commits `comtai sync` records.\n\
+             `comtai sync --rescan` re-reads the most recent 50 commits instead.",
             since.as_deref().unwrap_or("the last sync")
         ),
     };
@@ -1089,7 +1089,7 @@ fn cmd_path(ctx: &Ctx) -> Result<()> {
             "dir": ctx.store.dir(),
             "branch": ctx.store.scope.branch(),
             "scoped": ctx.store.scope.repo().is_some(),
-            // Whether the list travels with the repo (`clt share`).
+            // Whether the list travels with the repo (`comtai share`).
             "shared": ctx.store.is_shared(),
         }));
     } else {
@@ -1109,7 +1109,7 @@ fn cmd_path(ctx: &Ctx) -> Result<()> {
 /// are gone, and a teammate never sees them at all. This is the opt-in.
 ///
 /// It deliberately stops short of touching your index. Staging files is a
-/// decision about a commit you are in the middle of composing, and clt has no
+/// decision about a commit you are in the middle of composing, and comtai has no
 /// business making it — so we print the command instead of running it.
 fn cmd_share(ctx: &mut Ctx) -> Result<()> {
     let Some(repo) = ctx.store.scope.repo().cloned() else {
@@ -1126,7 +1126,7 @@ fn cmd_share(ctx: &mut Ctx) -> Result<()> {
     ctx.store.write_local_gitignore()?;
 
     // `info/exclude` is ours to edit; a committed .gitignore is not. If the
-    // project ignores .clt/ there, nothing we do here will make git see the
+    // project ignores .comtai/ there, nothing we do here will make git see the
     // file, and saying so beats appearing to succeed.
     let blocked = repo
         .ignore_source(store::REL_TASKS)
@@ -1150,18 +1150,18 @@ fn cmd_share(ctx: &mut Ctx) -> Result<()> {
     if let Some(src) = blocked {
         render::warn(&format!(
             "`{src}` still ignores the task list, and that file belongs to the project, \
-             not to clt. Remove its .clt/ entry, then run `clt share` again."
+             not to comtai. Remove its .comtai/ entry, then run `comtai share` again."
         ));
         return Ok(());
     }
 
     anstream::println!("  The task list is no longer excluded. To share it:");
     anstream::println!();
-    anstream::println!("    git add .clt && git commit -m \"track the clt task list\"");
+    anstream::println!("    git add .comtai && git commit -m \"track the comtai task list\"");
     anstream::println!();
     for line in [
         "tasks.json and hooks/ travel with the repo; the journal stays local,",
-        "per .clt/.gitignore. Expect the occasional merge conflict in tasks.json —",
+        "per .comtai/.gitignore. Expect the occasional merge conflict in tasks.json —",
         "the format is line-oriented and meant to be resolved by hand.",
     ] {
         anstream::println!("  {line}");
@@ -1195,7 +1195,7 @@ fn cmd_unshare(ctx: &mut Ctx) -> Result<()> {
         anstream::println!();
         anstream::println!("  It is still tracked, though. To stop committing it:");
         anstream::println!();
-        anstream::println!("    git rm -r --cached .clt");
+        anstream::println!("    git rm -r --cached .comtai");
         anstream::println!();
         anstream::println!("  That leaves your tasks on disk and drops them from the index.");
     }
@@ -1208,7 +1208,7 @@ fn cmd_init(ctx: &Ctx) -> Result<()> {
     std::fs::create_dir_all(&hooks_dir)
         .with_context(|| format!("creating {}", hooks_dir.display()))?;
 
-    // Neither file is overwritten. `clt init` is safe to re-run, and someone
+    // Neither file is overwritten. `comtai init` is safe to re-run, and someone
     // who has annotated the README should keep their notes.
     let sample = hooks_dir.join("post-add.sample");
     if !sample.exists() {
@@ -1217,7 +1217,7 @@ fn cmd_init(ctx: &Ctx) -> Result<()> {
     }
 
     // The directory documents itself, so whoever opens it next does not have to
-    // already know what clt is to work out what these files are.
+    // already know what comtai is to work out what these files are.
     let readme = dir.join("README.md");
     if !readme.exists() {
         std::fs::write(&readme, store::README)
@@ -1244,7 +1244,7 @@ fn cmd_init(ctx: &Ctx) -> Result<()> {
         anstream::println!("  Tasks you add now are scoped to `{branch}`.");
     }
     anstream::println!("  Sample hook: {}", sample.display());
-    anstream::println!("  What's in .clt/: {}", readme.display());
+    anstream::println!("  What's in .comtai/: {}", readme.display());
     Ok(())
 }
 
@@ -1254,27 +1254,27 @@ mod tests {
 
     #[test]
     fn closing_refs_reads_the_github_vocabulary() {
-        assert_eq!(closing_refs("fix the race\n\ncloses clt#3"), vec![3]);
-        assert_eq!(closing_refs("resolves clt#12"), vec![12]);
-        assert_eq!(closing_refs("Fixed clt#7."), vec![7]);
+        assert_eq!(closing_refs("fix the race\n\ncloses comtai#3"), vec![3]);
+        assert_eq!(closing_refs("resolves comtai#12"), vec![12]);
+        assert_eq!(closing_refs("Fixed comtai#7."), vec![7]);
     }
 
     #[test]
     fn closing_refs_takes_several_at_once() {
-        assert_eq!(closing_refs("closes clt#3 clt#4"), vec![3, 4]);
-        assert_eq!(closing_refs("closes clt#3, clt#4"), vec![3, 4]);
+        assert_eq!(closing_refs("closes comtai#3 comtai#4"), vec![3, 4]);
+        assert_eq!(closing_refs("closes comtai#3, comtai#4"), vec![3, 4]);
     }
 
     #[test]
     fn bare_references_do_not_close_anything() {
         // Mentioning a task is not the same as finishing it.
-        assert!(closing_refs("see clt#3 for context").is_empty());
-        assert!(closing_refs("clt#3").is_empty());
+        assert!(closing_refs("see comtai#3 for context").is_empty());
+        assert!(closing_refs("comtai#3").is_empty());
     }
 
     #[test]
     fn an_intervening_word_breaks_the_association() {
-        assert!(closing_refs("closes the bug described in clt#3").is_empty());
+        assert!(closing_refs("closes the bug described in comtai#3").is_empty());
     }
 
     #[test]

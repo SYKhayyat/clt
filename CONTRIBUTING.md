@@ -1,4 +1,4 @@
-# Contributing to clt
+# Contributing to comtai
 
 This document is meant to get you from a fresh clone to a merged change without
 having to reverse-engineer anything. If something here turns out to be wrong or
@@ -24,8 +24,8 @@ You need Rust (see [Requirements](README.md#requirements)) and `git` on your
 constantly.
 
 ```sh
-git clone https://github.com/SYKhayyat/clt
-cd clt
+git clone https://github.com/SYKhayyat/comtai
+cd comtai
 cargo build
 cargo test
 ```
@@ -34,19 +34,19 @@ That's the whole setup. There is no code generation step, no `.env`, no
 database, and eight dependencies, all mainstream.
 
 To drive your build by hand, use a throwaway repo rather than this one —
-`clt` writes to whatever repo it finds itself in, and you do not want your
+`comtai` writes to whatever repo it finds itself in, and you do not want your
 experiments in the checkout you are editing:
 
 ```sh
 cargo build --release
 mkdir /tmp/scratch && cd /tmp/scratch && git init
-~/code/clt/target/release/clt add "does this work"
-~/code/clt/target/release/clt
+~/code/comtai/target/release/comtai add "does this work"
+~/code/comtai/target/release/comtai
 ```
 
 ## The five-minute tour
 
-`clt` is a CLI over a JSON file, with two things that make it more than that:
+`comtai` is a CLI over a JSON file, with two things that make it more than that:
 it asks git which branch you are on, and it can be driven by an agent over MCP
 at the same time you are typing at it.
 
@@ -55,14 +55,14 @@ One invocation goes:
 1. `main::run` parses argv (`cli.rs`) and decides, from the subcommand alone,
    whether this invocation reads or writes (`access_for`).
 2. `Store::open` finds the repo by shelling out to git (`git.rs`), locates
-   `.clt/tasks.json`, takes the cross-process write lock if this is a write
+   `.comtai/tasks.json`, takes the cross-process write lock if this is a write
    (`lock.rs`), loads the file, and repairs anything a hand edit broke.
 3. A `cmd_*` function in `main.rs` mutates the in-memory store.
 4. `Ctx::commit` saves (atomic rename), appends to the journal (`journal.rs`),
    releases the lock, and then fires hooks (`hooks.rs`).
 5. Output goes through `render.rs`, or straight to `serde_json` if `--json`.
 
-`clt mcp` forks off at step 1 and runs its own loop in `mcp.rs`, opening and
+`comtai mcp` forks off at step 1 and runs its own loop in `mcp.rs`, opening and
 closing a store per request so it never holds the lock between calls.
 
 ## Module map
@@ -72,14 +72,14 @@ closing a store per request so it never holds the lock between calls.
 | `main.rs` | ~1270 | Every `cmd_*` handler, and the dispatch that picks one |
 | `store.rs` | ~1420 | Load, repair, mutate, save. Scope resolution, the tree, the global fallback |
 | `mcp.rs` | ~550 | The JSON-RPC server and its tool definitions |
-| `scan.rs` | ~450 | Finding `TODO(clt):` markers, and deciding what counts as a comment |
+| `scan.rs` | ~450 | Finding `TODO(comtai):` markers, and deciding what counts as a comment |
 | `git.rs` | ~350 | Everything that shells out to `git` |
 | `render.rs` | ~320 | Terminal output: colour, column widths, relative times |
 | `task.rs` | ~280 | The on-disk model — `Task`, `State`, `Location`, `Origin` |
 | `cli.rs` | ~280 | The clap definitions, and nothing else |
-| `journal.rs` | ~240 | The append-only log behind `clt log`, and its rotation |
+| `journal.rs` | ~240 | The append-only log behind `comtai log`, and its rotation |
 | `lock.rs` | ~220 | The cross-process write lock |
-| `hooks.rs` | ~160 | Running executables out of `.clt/hooks/` |
+| `hooks.rs` | ~160 | Running executables out of `.comtai/hooks/` |
 
 Every one of these opens with a module doc explaining *why* it is the way it
 is, not what it does. Read that before changing the module — most of the
@@ -117,7 +117,7 @@ new one. Never write `tasks.json` in place.
 **Hooks run after the lock is released.** A hook can do anything, including
 block on the network, and it must not do that inside the critical section.
 
-**The on-disk format is open.** `.clt/tasks.json` is documented, hand-editable
+**The on-disk format is open.** `.comtai/tasks.json` is documented, hand-editable
 and agent-writable. That means new fields must be `Option` or
 `#[serde(default)]` so older files still load, and nothing may assume the file
 was written by us. Bump `FORMAT_VERSION` only for a change that needs a
@@ -125,7 +125,7 @@ migration.
 
 **Nothing diagnostic goes to stdout.** Warnings, repairs and errors go to
 stderr; stdout carries the result and, under `--json`, nothing else. Under
-`clt mcp`, stdout is the JSON-RPC transport — a stray `println!` there corrupts
+`comtai mcp`, stdout is the JSON-RPC transport — a stray `println!` there corrupts
 the stream, which is why hook output is redirected.
 
 **`--json` means JSON, from every command, including the ones that write and
@@ -133,7 +133,7 @@ the ones that change nothing.** A no-op returns an empty array, not a sentence.
 
 ## Adding a command, end to end
 
-Say you want `clt archive <ids…>`. Six places, in order:
+Say you want `comtai archive <ids…>`. Six places, in order:
 
 1. **`cli.rs`** — a variant on `Command`, an `Args` struct for its flags, and a
    doc comment on each (clap turns those into `--help`).
@@ -144,7 +144,7 @@ Say you want `clt archive <ids…>`. Six places, in order:
 4. **`main.rs`: `fn cmd_archive`** — take `&mut Ctx`, mutate `ctx.store`, and
    finish with `ctx.commit(entries)` if it wrote. Handle `ctx.json` *before*
    any human-readable output, and return early.
-5. **`journal.rs`** — a `journal::Entry` per change, so `clt log` shows what
+5. **`journal.rs`** — a `journal::Entry` per change, so `comtai log` shows what
    happened and who did it.
 6. **`README.md`** — the command reference table, and prose if it needs
    explaining.
@@ -160,7 +160,7 @@ If agents should be able to call it too, add a tool to `mcp.rs` and a case to
 
 1. `task.rs` — add it to `Task` with `#[serde(default)]` and, if optional,
    `skip_serializing_if = "Option::is_none"`. Never a bare required field: a
-   file written by an older `clt` has to keep loading.
+   file written by an older `comtai` has to keep loading.
 2. `README.md` — add it to the `--json` row example *and* the `Storage`
    example. This is not optional politeness; `tests/contract.rs` compares the
    emitted key set against the README's examples in both directions and will
@@ -194,23 +194,23 @@ fn a_task_filed_on_one_branch_is_not_visible_from_another() {
     git_ok(&dir, &["add", "-A"]);
     git_ok(&dir, &["commit", "-qm", "init"]);
 
-    clt_ok(&dir, &["add", "on main"]);           // runs the binary, insists on exit 0
+    comtai_ok(&dir, &["add", "on main"]);           // runs the binary, insists on exit 0
     git_ok(&dir, &["switch", "-qc", "feat/x"]);
 
-    let here = clt_json(&dir, &["ls"]);          // `ls` is scoped to the branch
+    let here = comtai_json(&dir, &["ls"]);          // `ls` is scoped to the branch
     assert!(here.as_array().unwrap().is_empty(), "main's task leaked onto feat/x");
 
     cleanup(&dir);
 }
 ```
 
-The helpers worth knowing: `clt_ok` runs the binary and insists on exit 0,
-`clt` returns the raw `Output` when you want to assert on a failure,
-`clt_json` parses `--json` output, `all_tasks`/`titles` read the whole list
+The helpers worth knowing: `comtai_ok` runs the binary and insists on exit 0,
+`comtai` returns the raw `Output` when you want to assert on a failure,
+`comtai_json` parses `--json` output, `all_tasks`/`titles` read the whole list
 across branches, and `task_titled` finds one by title with an error message
 that names what was actually there.
 
-Most of what is worth testing here lives in the seam between `clt` and git —
+Most of what is worth testing here lives in the seam between `comtai` and git —
 branch scoping, `git ls-files`, `info/exclude`, whether a list survives a
 clone — and none of it is reachable from a unit test. `tests/concurrency.rs`
 goes further and spawns fifteen real processes at one store, because the bug it

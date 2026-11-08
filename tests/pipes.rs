@@ -1,4 +1,4 @@
-//! `clt ls | head` must not be a crash.
+//! `comtai ls | head` must not be a crash.
 //!
 //! Closing a pipe early is what `head`, `less` and every `grep -m1` do, and it
 //! is the one io error a CLI meets constantly. Rust does not make it free:
@@ -6,7 +6,7 @@
 //! `panic = "abort"`, so getting it wrong is an abort in the middle of somebody's
 //! shell pipeline.
 //!
-//! clt gets it right by delegating: `anstream`'s macros swallow `BrokenPipe` and
+//! comtai gets it right by delegating: `anstream`'s macros swallow `BrokenPipe` and
 //! panic on everything else. That is a property of a dependency's macro, not of
 //! any line of code here, which is exactly why it is pinned from the outside —
 //! nothing in this repo would fail to compile if `anstream` changed its mind.
@@ -21,22 +21,22 @@ use common::*;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-/// Runs clt with nobody on the other end of stdout, and reports how it took it.
+/// Runs comtai with nobody on the other end of stdout, and reports how it took it.
 fn into_a_closed_pipe(dir: &Path, args: &[&str]) -> (bool, String) {
-    let mut child = Command::new(CLT)
+    let mut child = Command::new(COMTAI)
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("running clt");
+        .expect("running comtai");
 
     // Drop the read end before the child gets anywhere. Every write it then
     // attempts fails, which is the condition under test.
     drop(child.stdout.take());
 
-    let out = child.wait_with_output().expect("waiting for clt");
+    let out = child.wait_with_output().expect("waiting for comtai");
     (
         out.status.success(),
         String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -45,11 +45,11 @@ fn into_a_closed_pipe(dir: &Path, args: &[&str]) -> (bool, String) {
 
 fn seeded(name: &str) -> std::path::PathBuf {
     let dir = repo(name);
-    write(&dir, "code.rs", "// TODO(clt): harvest me\n");
+    write(&dir, "code.rs", "// TODO(comtai): harvest me\n");
     git_ok(&dir, &["add", "-A"]);
     git_ok(&dir, &["commit", "-qm", "init"]);
     for i in 1..=40 {
-        clt_ok(&dir, &["add", &format!("task number {i}")]);
+        comtai_ok(&dir, &["add", &format!("task number {i}")]);
     }
     dir
 }
@@ -76,11 +76,11 @@ fn a_closed_reader_is_not_a_crash() {
         let (ok, stderr) = into_a_closed_pipe(&dir, &args);
         assert!(
             !stderr.contains("panicked"),
-            "clt {args:?} panicked when stdout went away:\n{stderr}"
+            "comtai {args:?} panicked when stdout went away:\n{stderr}"
         );
         assert!(
             ok,
-            "clt {args:?} failed when stdout went away; stderr was:\n{stderr}"
+            "comtai {args:?} failed when stdout went away; stderr was:\n{stderr}"
         );
     }
 
@@ -94,7 +94,7 @@ fn a_closed_reader_does_not_stop_the_write() {
     let dir = seeded("pipe-durable");
 
     let (ok, stderr) = into_a_closed_pipe(&dir, &["add", "filed into the void"]);
-    assert!(ok, "clt add failed into a closed pipe:\n{stderr}");
+    assert!(ok, "comtai add failed into a closed pipe:\n{stderr}");
 
     assert!(
         titles(&dir).iter().any(|t| t == "filed into the void"),
@@ -102,7 +102,7 @@ fn a_closed_reader_does_not_stop_the_write() {
     );
 
     let (ok, stderr) = into_a_closed_pipe(&dir, &["done", "1"]);
-    assert!(ok, "clt done failed into a closed pipe:\n{stderr}");
+    assert!(ok, "comtai done failed into a closed pipe:\n{stderr}");
     let tasks = all_tasks(&dir);
     assert_eq!(task_titled(&tasks, "task number 1")["state"], "done");
 

@@ -1,5 +1,5 @@
 [package]
-name = "clt"
+name = "comtai"
 version = "0.1.0"
 edition = "2024"
 description = "Branch-scoped task list that lives in your repo, and that your coding agent can write to"

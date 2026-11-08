@@ -2,14 +2,14 @@
 //!
 //! Storage layout, and why:
 //!
-//! * Inside a repo, the list lives at `<worktree>/.clt/tasks.json`, excluded
+//! * Inside a repo, the list lives at `<worktree>/.comtai/tasks.json`, excluded
 //!   locally via `.git/info/exclude`. It sits next to the code it describes, so
 //!   an agent working in the repo can find it without being told where it is —
 //!   which is the whole point of the tool. It is *not* committed, so branch
 //!   switching never touches it, merges never conflict on it, and your task
 //!   list never lands in a PR diff.
 //! * Outside a repo we fall back to one global list under the platform data
-//!   dir, so `clt` still works in a scratch shell instead of erroring.
+//!   dir, so `comtai` still works in a scratch shell instead of erroring.
 //!
 //! Writes are atomic (temp file + rename) and serialized across processes (see
 //! [`crate::lock`]). This is somebody's daily task list, concurrently written by
@@ -34,17 +34,17 @@ pub const FORMAT_VERSION: u32 = 1;
 
 /// The task list's path relative to the repo root, for the git queries that
 /// decide whether it is shared.
-pub const REL_TASKS: &str = ".clt/tasks.json";
+pub const REL_TASKS: &str = ".comtai/tasks.json";
 
-/// Dropped into `.clt/README.md` by `clt init`.
+/// Dropped into `.comtai/README.md` by `comtai init`.
 ///
 /// The directory holds a format this project deliberately documents as open —
 /// hand-editable, agent-writable — so it should explain itself to whoever opens
 /// it next, without them having to already know the tool exists.
-pub const README: &str = r##"# .clt/
+pub const README: &str = r##"# .comtai/
 
-The task list for this repository, written by `clt`. Run `clt` anywhere in the
-repo to see it, or `clt --help` for the rest.
+The task list for this repository, written by `comtai`. Run `comtai` anywhere in the
+repo to see it, or `comtai --help` for the rest.
 
 ## What is in here
 
@@ -80,17 +80,17 @@ repo to see it, or `clt --help` for the rest.
 `state` is `todo`, `doing` or `done`. `branch` absent means the task is
 repo-wide and shows on every branch. `parent` absent means it is a root task.
 
-Edit it by hand if you like. On load, clt repairs duplicate ids, parents that
+Edit it by hand if you like. On load, comtai repairs duplicate ids, parents that
 do not exist, and parent cycles, reporting each repair on stderr. Ids are never
 reused, so deleting a task does not free its number.
 
 ## Is this committed?
 
-By default, no: `clt` adds `.clt/` to `.git/info/exclude`, which is per-clone
+By default, no: `comtai` adds `.comtai/` to `.git/info/exclude`, which is per-clone
 and untracked. That keeps the list out of pull requests and out of merge
 conflicts, at the cost of it not surviving a clone.
 
-Run `clt share` to commit it instead, and `clt unshare` to go back.
+Run `comtai share` to commit it instead, and `comtai unshare` to go back.
 
 ## Hooks
 
@@ -98,19 +98,19 @@ An executable named for the event, in `hooks/`, in any language:
 
     post-add  post-done  post-start  post-reopen  post-rm
 
-The task arrives as JSON on stdin, and in `CLT_EVENT`, `CLT_TASK_ID`,
-`CLT_TASK_TITLE`, `CLT_TASK_STATE`, `CLT_BRANCH`, `CLT_ACTOR` and
-`CLT_TASK_JSON`. Exit status is reported but ignored — these run after the
+The task arrives as JSON on stdin, and in `COMTAI_EVENT`, `COMTAI_TASK_ID`,
+`COMTAI_TASK_TITLE`, `COMTAI_TASK_STATE`, `COMTAI_BRANCH`, `COMTAI_ACTOR` and
+`COMTAI_TASK_JSON`. Exit status is reported but ignored — these run after the
 change has already happened.
 
 `post-add.sample` in `hooks/` is a working example. Rename it to `post-add`
 (and `chmod +x` it on Unix) to enable it.
 "##;
 
-/// Written into `.clt/.gitignore` by `clt share`, so that opting in shares the
+/// Written into `.comtai/.gitignore` by `comtai share`, so that opting in shares the
 /// task list without also sharing per-clone noise.
 pub const LOCAL_GITIGNORE: &str = "\
-# Written by `clt share`. The task list (tasks.json) and hooks/ are shared with
+# Written by `comtai share`. The task list (tasks.json) and hooks/ are shared with
 # the repo; everything below is per-clone and must not be committed.
 #
 # The journal is local on purpose: it is an append-only record of activity in
@@ -131,7 +131,7 @@ pub struct Data {
     pub next_id: u32,
     #[serde(default)]
     pub tasks: Vec<Task>,
-    /// Last commit examined by `clt sync` for closing directives, so linkage
+    /// Last commit examined by `comtai sync` for closing directives, so linkage
     /// scans only new history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_commit: Option<String>,
@@ -176,7 +176,7 @@ impl Scope {
 /// saved, because a task edit is a read-modify-write and two of those
 /// interleaved lose one of the changes. A reader takes nothing: the store is
 /// replaced by an atomic rename, so a reader always sees some whole version of
-/// the file, and making `clt ls` queue behind an agent's write would be a cost
+/// the file, and making `comtai ls` queue behind an agent's write would be a cost
 /// with no benefit.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Access {
@@ -196,10 +196,10 @@ pub struct Store {
     /// the file, and the result isn't on disk yet.
     ///
     /// The caller must persist it even for a read-only command. Otherwise a
-    /// plain `clt` re-runs the import on every single invocation and re-prints
+    /// plain `comtai` re-runs the import on every single invocation and re-prints
     /// the same repair warning forever — and, worse, the broken file stays on
     /// disk, so every other reader of this deliberately-open format keeps
-    /// seeing the damage clt has been quietly working around.
+    /// seeing the damage comtai has been quietly working around.
     pub migrated: bool,
     /// Held for the whole read-modify-write when opened for [`Access::Write`].
     lock: Option<Lock>,
@@ -216,7 +216,7 @@ impl Store {
 
     pub fn open_in(scope: Scope, access: Access) -> Result<Self> {
         let dir = match &scope {
-            Scope::Repo(repo) => repo.root.join(".clt"),
+            Scope::Repo(repo) => repo.root.join(".comtai"),
             Scope::Global => global_dir()?,
         };
 
@@ -236,7 +236,7 @@ impl Store {
                 .with_context(|| format!("reading {}", path.display()))?;
             parse(&raw).with_context(|| {
                 format!(
-                    "{} is not readable as a clt task list.\n\
+                    "{} is not readable as a comtai task list.\n\
                      It has not been modified — move it aside to start fresh.",
                     path.display()
                 )
@@ -271,7 +271,7 @@ impl Store {
     ///
     /// Called instead of waiting for the `Store` to drop because hooks run
     /// after the save, and a `post-add` that posts to Slack would otherwise
-    /// hold every other `clt` in the repo hostage for the length of an HTTP
+    /// hold every other `comtai` in the repo hostage for the length of an HTTP
     /// round trip.
     pub fn release_lock(&mut self) {
         self.lock = None;
@@ -331,7 +331,7 @@ impl Store {
     /// Like [`Self::get`], but with an error message that helps.
     pub fn require(&self, id: u32) -> Result<&Task> {
         self.get(id)
-            .ok_or_else(|| anyhow::anyhow!("no task #{id} (try `clt ls --all`)"))
+            .ok_or_else(|| anyhow::anyhow!("no task #{id} (try `comtai ls --all`)"))
     }
 
     pub fn insert(&mut self, mut task: Task) -> u32 {
@@ -411,7 +411,7 @@ impl Store {
             if self.descendants(id).contains(&p) {
                 bail!(
                     "#{p} is already inside #{id}'s subtree — that would make a cycle\n\
-                     (detach it first: `clt move {p} --root`)"
+                     (detach it first: `comtai move {p} --root`)"
                 );
             }
             // Branch coherence: a subtree must be visible or invisible as a
@@ -455,7 +455,7 @@ impl Store {
         if let Some(parent) = task.parent {
             bail!(
                 "#{id} is nested under #{parent}, and a subtask shares its parent's scope\n\
-                 (re-scope #{parent}, or detach it first: `clt move {id} --root`)"
+                 (re-scope #{parent}, or detach it first: `comtai move {id} --root`)"
             );
         }
 
@@ -672,11 +672,11 @@ impl Store {
 
     pub fn save(&self) -> Result<()> {
         // Only claim the exclude entry when writing the list for the first
-        // time. Re-adding it on every save would silently undo `clt share`, and
+        // time. Re-adding it on every save would silently undo `comtai share`, and
         // would re-exclude a list that arrived with a clone.
         //
         // Keyed on the task file rather than on the directory: taking the write
-        // lock creates the directory, so by the time we get here `.clt/` always
+        // lock creates the directory, so by the time we get here `.comtai/` always
         // exists and testing for it would mean the entry was never written at
         // all.
         let first_time = !self.path().exists();
@@ -707,7 +707,7 @@ impl Store {
         // original bug here and it was worse than a lost update: two writers
         // truncating and filling the same temp file produced a rename of one
         // process's complete JSON followed by the other's tail, and the list
-        // came back "not readable as a clt task list". Writers are serialized
+        // came back "not readable as a comtai task list". Writers are serialized
         // by the lock above, so this is belt to that suspenders — but the
         // migration path can save without holding it, and a temp file is
         // cheaper to make unique than to reason about.
@@ -729,12 +729,12 @@ impl Store {
 ///
 /// The write lock keeps other *writers* out, but readers take no lock by
 /// design, and on Windows replacing a file that another process has open can
-/// fail with a sharing violation — from a concurrent `clt ls`, or from a virus
+/// fail with a sharing violation — from a concurrent `comtai ls`, or from a virus
 /// scanner that opened the file the instant we wrote it. Both clear in
 /// milliseconds.
 ///
 /// This is exactly the case the tool is built for, so failing the user's
-/// `clt add` because someone else was reading at that moment is not acceptable.
+/// `comtai add` because someone else was reading at that moment is not acceptable.
 /// A handful of retries covers it; a persistent failure (no permission, disk
 /// full) still surfaces, because the last error is what gets returned.
 fn replace(tmp: &Path, path: &Path) -> std::io::Result<()> {
@@ -801,8 +801,8 @@ fn parse(raw: &str) -> Result<Data> {
     let data: Data = serde_json::from_str(raw)?;
     if data.version > FORMAT_VERSION {
         bail!(
-            "task list is format version {} but this clt understands up to {}. \
-             Upgrade clt rather than letting an old build rewrite the file.",
+            "task list is format version {} but this comtai understands up to {}. \
+             Upgrade comtai rather than letting an old build rewrite the file.",
             data.version,
             FORMAT_VERSION
         );
@@ -855,7 +855,7 @@ fn repair(data: &mut Data, warnings: &mut Vec<String>) -> bool {
     }
 
     // Cycles. Without this a hand-edited `3 → 5 → 3` turns every tree walk into
-    // an infinite loop, and `clt` — the thing you run twenty times a day —
+    // an infinite loop, and `comtai` — the thing you run twenty times a day —
     // hangs or blows the stack.
     for cycle in find_cycles(&data.tasks) {
         // Break at the lowest id on the cycle: deterministic, and it keeps the
@@ -950,7 +950,7 @@ fn global_dir() -> Result<PathBuf> {
         if let Ok(base) = std::env::var("LOCALAPPDATA")
             && !base.is_empty()
         {
-            return Ok(PathBuf::from(base).join("clt"));
+            return Ok(PathBuf::from(base).join("comtai"));
         }
         if let Ok(profile) = std::env::var("USERPROFILE")
             && !profile.is_empty()
@@ -958,7 +958,7 @@ fn global_dir() -> Result<PathBuf> {
             return Ok(PathBuf::from(profile)
                 .join("AppData")
                 .join("Local")
-                .join("clt"));
+                .join("comtai"));
         }
         bail!("cannot locate an application data directory (LOCALAPPDATA and USERPROFILE are unset)")
     }
@@ -967,12 +967,12 @@ fn global_dir() -> Result<PathBuf> {
         if let Ok(xdg) = std::env::var("XDG_DATA_HOME")
             && !xdg.is_empty()
         {
-            return Ok(PathBuf::from(xdg).join("clt"));
+            return Ok(PathBuf::from(xdg).join("comtai"));
         }
         if let Ok(home) = std::env::var("HOME")
             && !home.is_empty()
         {
-            return Ok(PathBuf::from(home).join(".local").join("share").join("clt"));
+            return Ok(PathBuf::from(home).join(".local").join("share").join("comtai"));
         }
         bail!("cannot locate a data directory (XDG_DATA_HOME and HOME are unset)")
     }
@@ -1004,7 +1004,7 @@ fn find_legacy(scope: &Scope) -> Option<PathBuf> {
 fn import_legacy(path: &Path) -> Result<(Data, String)> {
     let raw = std::fs::read_to_string(path)?;
     let legacy: LegacyList = serde_json::from_str(&raw)
-        .with_context(|| format!("{} exists but isn't a pre-0.1 clt list", path.display()))?;
+        .with_context(|| format!("{} exists but isn't a pre-0.1 comtai list", path.display()))?;
 
     let now = Utc::now();
     let mut data = Data::default();
@@ -1392,12 +1392,12 @@ mod tests {
     fn format_version_from_the_future_is_refused_not_silently_rewritten() {
         let raw = r#"{"version":999,"next_id":1,"tasks":[]}"#;
         let err = parse(raw).unwrap_err();
-        assert!(err.to_string().contains("Upgrade clt"), "got: {err}");
+        assert!(err.to_string().contains("Upgrade comtai"), "got: {err}");
     }
 
     #[test]
     fn legacy_lists_import_as_repo_wide_tasks() {
-        let dir = std::env::temp_dir().join(format!("clt-legacy-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("comtai-legacy-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("tasks.json");
         std::fs::write(

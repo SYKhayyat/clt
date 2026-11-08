@@ -1,4 +1,4 @@
-# Paths `clt scan` skips when harvesting TODO(clt): markers.
+# Paths `comtai scan` skips when harvesting TODO(comtai): markers.
 # Exact path, `dir/` prefix, or a trailing `*` wildcard. One per line.
 #
 # This project is the pathological case for its own scanner: the docs explain

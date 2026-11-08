@@ -1,26 +1,26 @@
 //! Concurrent writers, run as real processes.
 //!
 //! This is the one property that cannot be tested in-process: the failure mode
-//! is two `clt` invocations interleaving their read-modify-write, and a unit
+//! is two `comtai` invocations interleaving their read-modify-write, and a unit
 //! test with two `Store` values in one process shares no filesystem lock
 //! contention worth speaking of.
 //!
 //! The bug this pins down: with a shared temp filename and no lock, fifteen
-//! concurrent `clt add` calls reliably produced a `tasks.json` consisting of one
+//! concurrent `comtai add` calls reliably produced a `tasks.json` consisting of one
 //! process's complete JSON followed by another's tail, at which point the list
-//! was unreadable and clt's own advice was to move it aside and start over.
+//! was unreadable and comtai's own advice was to move it aside and start over.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-const CLT: &str = env!("CARGO_BIN_EXE_clt");
+const COMTAI: &str = env!("CARGO_BIN_EXE_comtai");
 
 fn scratch(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("clt-it-{}-{name}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("comtai-it-{}-{name}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(&dir).unwrap();
 
-    // A real repo, so the store lands in <root>/.clt and branch scoping is live.
+    // A real repo, so the store lands in <root>/.comtai and branch scoping is live.
     for args in [
         vec!["init", "--quiet"],
         vec!["config", "user.email", "test@example.com"],
@@ -39,17 +39,17 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
-fn clt(dir: &Path, args: &[&str]) -> std::process::Output {
-    Command::new(CLT)
+fn comtai(dir: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(COMTAI)
         .args(args)
         .current_dir(dir)
         .output()
-        .expect("running clt")
+        .expect("running comtai")
 }
 
-/// How many tasks the store actually contains, via clt's own reader.
+/// How many tasks the store actually contains, via comtai's own reader.
 fn count(dir: &Path) -> usize {
-    let out = clt(dir, &["ls", "--all", "--done", "--json"]);
+    let out = comtai(dir, &["ls", "--all", "--done", "--json"]);
     assert!(
         out.status.success(),
         "the task list must still be readable\nstderr: {}",
@@ -67,13 +67,13 @@ fn concurrent_adds_neither_corrupt_the_store_nor_vanish() {
 
     let mut children: Vec<std::process::Child> = (0..WRITERS)
         .map(|i| {
-            Command::new(CLT)
+            Command::new(COMTAI)
                 .args(["add", &format!("task number {i}")])
                 .current_dir(&dir)
                 .stdout(Stdio::null())
                 .stderr(Stdio::piped())
                 .spawn()
-                .expect("spawning clt")
+                .expect("spawning comtai")
         })
         .collect();
 
@@ -107,12 +107,12 @@ fn a_concurrent_reader_never_observes_a_torn_file() {
     // write, this catches it.
     let dir = scratch("concurrent-read");
     for i in 0..40 {
-        clt(&dir, &["add", &format!("seed {i}")]);
+        comtai(&dir, &["add", &format!("seed {i}")]);
     }
 
     let mut writers: Vec<std::process::Child> = (0..8)
         .map(|i| {
-            Command::new(CLT)
+            Command::new(COMTAI)
                 .args(["add", &format!("late {i}")])
                 .current_dir(&dir)
                 .stdout(Stdio::null())
@@ -121,13 +121,13 @@ fn a_concurrent_reader_never_observes_a_torn_file() {
                 // that came out wrong.
                 .stderr(Stdio::piped())
                 .spawn()
-                .expect("spawning clt")
+                .expect("spawning comtai")
         })
         .collect();
 
     // Hammer reads while those land. Every one must parse.
     for _ in 0..25 {
-        let out = clt(&dir, &["ls", "--all", "--done", "--json"]);
+        let out = comtai(&dir, &["ls", "--all", "--done", "--json"]);
         assert!(
             out.status.success(),
             "a read raced a write and failed: {}",
@@ -162,7 +162,7 @@ impl WaitRef for std::process::Child {
         if let Some(mut pipe) = self.stderr.take() {
             let _ = pipe.read_to_string(&mut err);
         }
-        let status = self.wait().expect("waiting on clt");
+        let status = self.wait().expect("waiting on comtai");
         (status.success(), err)
     }
 }

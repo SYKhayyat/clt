@@ -1,6 +1,6 @@
 //! The on-disk task model.
 //!
-//! Everything here is serialized straight into `.clt/tasks.json`, which is a
+//! Everything here is serialized straight into `.comtai/tasks.json`, which is a
 //! documented, agent-writable format rather than an internal detail. That means
 //! two things for anyone editing this file: new fields must be `Option` or have
 //! `#[serde(default)]` so older files still load, and nothing may assume the
@@ -65,7 +65,7 @@ impl FromStr for State {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         // Generous on input: these get typed by hand many times a day, and the
-        // legacy names appear in files written by clt 0.0.x.
+        // legacy names appear in files written by comtai 0.0.x.
         match s.trim().to_ascii_lowercase().as_str() {
             "todo" | "t" | "open" | "notstarted" | "not-started" => Ok(State::Todo),
             "doing" | "d" | "wip" | "started" | "inprogress" | "in-progress" => Ok(State::Doing),
@@ -138,7 +138,7 @@ impl FromStr for Location {
 
 /// How a task came to exist.
 ///
-/// The distinction matters for `clt scan`: scanned tasks are owned by the
+/// The distinction matters for `comtai scan`: scanned tasks are owned by the
 /// source comment that produced them and get closed when it disappears, while
 /// manual tasks are owned by you and are never touched by a scan.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,7 +147,7 @@ pub enum Origin {
     /// Created by a human or an agent through the CLI or MCP.
     #[default]
     Manual,
-    /// Harvested from a `TODO(clt):` marker in the source.
+    /// Harvested from a `TODO(comtai):` marker in the source.
     Scan {
         /// Identity of the marker, derived from its normalized text rather than
         /// its position, so a task survives the comment moving down the file.

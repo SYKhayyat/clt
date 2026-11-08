@@ -1,7 +1,7 @@
 name: CI
 
 # There were 98 tests here and nothing ran them. That is not a hypothetical
-# gap: the suite spawns real `clt` processes, shells out to `git`, creates
+# gap: the suite spawns real `comtai` processes, shells out to `git`, creates
 # branches and races fifteen writers against one store — tests whose failures
 # come from the environment, not from the code, and which had only ever been
 # observed on one Windows machine. The two claims this project is built on
@@ -69,9 +69,9 @@ jobs:
 
           # Absolute, because the rest of this runs in a throwaway repo
           # elsewhere. `.exe` on the Windows runner.
-          clt="$PWD/target/release/clt"
-          [ -x "$clt" ] || clt="$clt.exe"
-          if [ ! -x "$clt" ]; then
+          comtai="$PWD/target/release/comtai"
+          [ -x "$comtai" ] || comtai="$comtai.exe"
+          if [ ! -x "$comtai" ]; then
             echo "::error::the release build exited zero without producing a binary"
             exit 1
           fi
@@ -82,33 +82,33 @@ jobs:
           git init --quiet --initial-branch=main .
           git config user.email ci@example.com
           git config user.name ci
-          printf '// TODO(clt): harvest me\n' > src.rs
+          printf '// TODO(comtai): harvest me\n' > src.rs
           git add -A
           git commit -qm init
 
           # No init step, as documented: the first `add` creates the store.
-          "$clt" add "a task on main" > /dev/null
-          "$clt" scan > /dev/null
+          "$comtai" add "a task on main" > /dev/null
+          "$comtai" scan > /dev/null
 
           # Two tasks: the typed one and the one harvested from the marker.
           # `|| true` because grep exits 1 on no matches, and 0 matches is a
           # result to report, not a reason to die three lines early.
-          count="$("$clt" ls --json | grep -c '"id"' || true)"
+          count="$("$comtai" ls --json | grep -c '"id"' || true)"
           [ "$count" = "2" ] || fail "expected 2 tasks after add + scan, got $count"
 
           # Branch scoping — the headline claim — driven end to end.
           git checkout -q -b feat/x
-          "$clt" add "a task on feat/x" > /dev/null
-          if ! "$clt" ls --json | grep -q "a task on feat/x"; then
+          "$comtai" add "a task on feat/x" > /dev/null
+          if ! "$comtai" ls --json | grep -q "a task on feat/x"; then
             fail "a task filed on feat/x is not visible from feat/x"
           fi
           git checkout -q main
-          if "$clt" ls --json | grep -q "a task on feat/x"; then
+          if "$comtai" ls --json | grep -q "a task on feat/x"; then
             fail "a task filed on feat/x is visible from main"
           fi
 
-          if ! "$clt" path --json | grep -q '"tasks"'; then
-            fail "clt path --json did not emit a tasks path"
+          if ! "$comtai" path --json | grep -q '"tasks"'; then
+            fail "comtai path --json did not emit a tasks path"
           fi
 
   lint:

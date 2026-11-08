@@ -1,12 +1,12 @@
-//! Hook scripts in `.clt/hooks/`.
+//! Hook scripts in `.comtai/hooks/`.
 //!
 //! This is the extensibility story, and it is deliberately git's: an executable
 //! with the right name, in the right directory, in whatever language you like.
 //! No plugin API to design, version, or keep ABI-stable; no scripting runtime
-//! embedded in the binary. If you want `clt` to post to Slack when an agent
+//! embedded in the binary. If you want `comtai` to post to Slack when an agent
 //! files a task, that's four lines of shell and zero lines of Rust in here.
 //!
-//! Hooks receive the task as JSON on stdin and as `CLT_*` environment
+//! Hooks receive the task as JSON on stdin and as `COMTAI_*` environment
 //! variables, inherit stdout/stderr so their output is visible, and cannot fail
 //! the command that triggered them — every hook we fire is a `post-` hook,
 //! reporting something that already happened.
@@ -32,7 +32,7 @@ pub enum Output {
     Divert,
 }
 
-/// Fires `.clt/hooks/<event>` if it exists, with `task` as its payload.
+/// Fires `.comtai/hooks/<event>` if it exists, with `task` as its payload.
 pub fn fire(dir: &Path, event: &str, task: &Task, actor: Option<&str>, out: Output) {
     let hooks = dir.join("hooks");
     let Some((program, args)) = resolve(&hooks, event) else {
@@ -44,13 +44,13 @@ pub fn fire(dir: &Path, event: &str, task: &Task, actor: Option<&str>, out: Outp
     let mut cmd = Command::new(program);
     cmd.args(args)
         .current_dir(dir.parent().unwrap_or(dir))
-        .env("CLT_EVENT", event)
-        .env("CLT_TASK_ID", task.id.to_string())
-        .env("CLT_TASK_TITLE", &task.title)
-        .env("CLT_TASK_STATE", task.state.as_str())
-        .env("CLT_TASK_JSON", &payload)
-        .env("CLT_BRANCH", task.branch.as_deref().unwrap_or(""))
-        .env("CLT_ACTOR", actor.unwrap_or(""))
+        .env("COMTAI_EVENT", event)
+        .env("COMTAI_TASK_ID", task.id.to_string())
+        .env("COMTAI_TASK_TITLE", &task.title)
+        .env("COMTAI_TASK_STATE", task.state.as_str())
+        .env("COMTAI_TASK_JSON", &payload)
+        .env("COMTAI_BRANCH", task.branch.as_deref().unwrap_or(""))
+        .env("COMTAI_ACTOR", actor.unwrap_or(""))
         .stdin(Stdio::piped())
         .stdout(match out {
             Output::Inherit => Stdio::inherit(),
@@ -144,20 +144,20 @@ fn resolve(hooks: &Path, event: &str) -> Option<(String, Vec<String>)> {
     }
 }
 
-/// Example hooks written on `clt init`, so the directory documents itself.
+/// Example hooks written on `comtai init`, so the directory documents itself.
 pub const SAMPLE: &str = r#"#!/bin/sh
-# clt hook — rename to `post-add` (and chmod +x) to enable.
+# comtai hook — rename to `post-add` (and chmod +x) to enable.
 #
 # Fired after a task is created. The task is on stdin as JSON, and also in:
-#   CLT_EVENT CLT_TASK_ID CLT_TASK_TITLE CLT_TASK_STATE CLT_BRANCH CLT_ACTOR
-#   CLT_TASK_JSON
+#   COMTAI_EVENT COMTAI_TASK_ID COMTAI_TASK_TITLE COMTAI_TASK_STATE COMTAI_BRANCH COMTAI_ACTOR
+#   COMTAI_TASK_JSON
 #
 # Exit status is reported but ignored — this hook cannot veto the change.
 #
 # Events: post-add  post-done  post-start  post-reopen  post-rm
 #
 # Example: shout when your agent files something, but stay quiet for yourself.
-if [ -n "$CLT_ACTOR" ]; then
-  printf '\n  %s filed #%s: %s\n\n' "$CLT_ACTOR" "$CLT_TASK_ID" "$CLT_TASK_TITLE"
+if [ -n "$COMTAI_ACTOR" ]; then
+  printf '\n  %s filed #%s: %s\n\n' "$COMTAI_ACTOR" "$COMTAI_TASK_ID" "$COMTAI_TASK_TITLE"
 fi
 "#;

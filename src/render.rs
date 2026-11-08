@@ -2,12 +2,12 @@
 //!
 //! Everything goes through `anstream`, which strips ANSI when stdout isn't a
 //! terminal and honours `NO_COLOR`/`CLICOLOR_FORCE`. That's not politeness —
-//! it's what makes `clt ls | grep` and `clt ls > file` produce something a
+//! it's what makes `comtai ls | grep` and `comtai ls > file` produce something a
 //! human or a script can actually read.
 //!
 //! Nothing here checks the result of a write, and that is deliberate rather
 //! than sloppy: `anstream`'s macros return `()`, swallowing `BrokenPipe` and
-//! panicking on anything else. So `clt ls | head` — the reader closing the pipe
+//! panicking on anything else. So `comtai ls | head` — the reader closing the pipe
 //! after two lines — exits quietly on every platform, and a genuinely broken
 //! stdout is loud instead of silent. `tests/pipes.rs` pins that, because it is
 //! a property of a dependency's macro and would otherwise change under us.
@@ -51,11 +51,11 @@ pub fn dimmed(text: &str) -> String {
 
 pub fn warn(msg: &str) {
     let style = fg(AnsiColor::Yellow);
-    anstream::eprintln!("{}", paint(style, &format!("clt: {msg}")));
+    anstream::eprintln!("{}", paint(style, &format!("comtai: {msg}")));
 }
 
 pub fn note(msg: &str) {
-    anstream::eprintln!("{}", paint(dim(), &format!("clt: {msg}")));
+    anstream::eprintln!("{}", paint(dim(), &format!("comtai: {msg}")));
 }
 
 /// Compact relative time: `now`, `5m`, `3h`, `2d`, `6w`.
@@ -226,7 +226,7 @@ pub fn summary(open: usize, doing: usize, hidden_done: usize) {
     }
     parts.push(format!("{open} open"));
     if hidden_done > 0 {
-        parts.push(format!("{hidden_done} done (clt ls --done)"));
+        parts.push(format!("{hidden_done} done (comtai ls --done)"));
     }
     anstream::println!("{}", paint(dim(), &format!("  {}", parts.join(" · "))));
 }
@@ -240,19 +240,19 @@ pub fn empty(branch: Option<&str>, filtered: bool) {
     };
     if filtered {
         anstream::println!("  {}", paint(dim(), "Nothing matches that filter."));
-        anstream::println!("  {}", paint(dim(), "clt ls --all    every branch, every state"));
+        anstream::println!("  {}", paint(dim(), "comtai ls --all    every branch, every state"));
         return;
     }
     anstream::println!("  Nothing {where_}.");
     anstream::println!();
     anstream::println!(
         "  {}   {}",
-        paint(bold(), "clt add \"the thing\""),
+        paint(bold(), "comtai add \"the thing\""),
         paint(dim(), "file a task on this branch")
     );
     anstream::println!(
         "  {}              {}",
-        paint(bold(), "clt ls --all"),
+        paint(bold(), "comtai ls --all"),
         paint(dim(), "see every branch")
     );
 }

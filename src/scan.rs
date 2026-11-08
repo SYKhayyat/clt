@@ -1,4 +1,4 @@
-//! Harvesting `TODO(clt):` markers out of the source tree.
+//! Harvesting `TODO(comtai):` markers out of the source tree.
 //!
 //! This is the feature that only works because the tool is repo-scoped, and
 //! it's the one that keeps the list honest: a task list drifts away from the
@@ -16,10 +16,10 @@ use std::process::{Command, Stdio};
 
 use crate::git::Repo;
 
-/// Markers we recognise. The `(clt)` qualifier is mandatory: harvesting every
+/// Markers we recognise. The `(comtai)` qualifier is mandatory: harvesting every
 /// bare `TODO` in a real codebase would produce hundreds of tasks nobody asked
 /// for and instantly discredit the feature.
-const MARKERS: &[&str] = &["TODO(clt)", "FIXME(clt)"];
+const MARKERS: &[&str] = &["TODO(comtai)", "FIXME(comtai)"];
 
 /// Files above this size are skipped. Source files are not 2MB; things that are
 /// tend to be vendored bundles, fixtures or lockfiles.
@@ -36,7 +36,7 @@ pub struct Hit {
 
 /// Scans the working tree for markers.
 ///
-/// `patterns` is the `.cltignore` set. It is applied here, with [`wants`],
+/// `patterns` is the `.comtaiignore` set. It is applied here, with [`wants`],
 /// before anything is opened: the caller used to collect every hit and throw
 /// the excluded ones away afterwards, which meant reading every file in
 /// `git ls-files` — including whatever a project keeps in the tree but out of
@@ -68,7 +68,7 @@ pub fn scan(repo: &Repo, patterns: &[String]) -> Result<Vec<Hit>> {
         hits.extend(scan_text(&text, &rel));
     }
 
-    // Deterministic order so `clt scan` produces the same ids run to run.
+    // Deterministic order so `comtai scan` produces the same ids run to run.
     hits.sort_by(|a, b| (&a.file, a.line).cmp(&(&b.file, b.line)));
 
     // Collapse duplicates, keeping the first by sort order. Markers sharing a
@@ -89,7 +89,7 @@ pub fn scan_text(text: &str, file: &str) -> Vec<Hit> {
         };
         let title = clean(body);
         if title.is_empty() {
-            continue; // a bare `TODO(clt):` with no text says nothing
+            continue; // a bare `TODO(comtai):` with no text says nothing
         }
         hits.push(Hit {
             key: key_for(&title),
@@ -120,7 +120,7 @@ const COMMENT_OPENERS: &[&str] = &[
 /// rare false positive of a shell script that single-quotes a marker.
 ///
 /// Raw string literals (`r#"..."#`) defeat quote counting by design. That's a
-/// known limit, and the escape hatch is `.cltignore` — see [`load_ignores`].
+/// known limit, and the escape hatch is `.comtaiignore` — see [`load_ignores`].
 fn inside_string_literal(prefix: &str) -> bool {
     let bytes = prefix.as_bytes();
     let mut quotes = 0usize;
@@ -174,7 +174,7 @@ fn find_marker(line: &str) -> Option<&str> {
             continue;
         }
         let rest = &line[at + marker.len()..];
-        // Require a separator so `TODO(clt)x` isn't treated as a marker.
+        // Require a separator so `TODO(comtai)x` isn't treated as a marker.
         let rest = rest.strip_prefix(':').unwrap_or(rest);
         if rest.is_empty() || rest.starts_with([' ', '\t']) {
             return Some(rest);
@@ -183,13 +183,13 @@ fn find_marker(line: &str) -> Option<&str> {
     None
 }
 
-/// Patterns from a repo-root `.cltignore`, listing paths the scanner skips.
+/// Patterns from a repo-root `.comtaiignore`, listing paths the scanner skips.
 ///
-/// At the repo root and committable, unlike `.clt/` — excluding your test
+/// At the repo root and committable, unlike `.comtai/` — excluding your test
 /// fixtures and docs from harvesting is a decision the whole team shares, not a
 /// per-clone preference.
 pub fn load_ignores(root: &std::path::Path) -> Vec<String> {
-    let Ok(raw) = std::fs::read_to_string(root.join(".cltignore")) else {
+    let Ok(raw) = std::fs::read_to_string(root.join(".comtaiignore")) else {
         return Vec::new();
     };
     raw.lines()
@@ -199,7 +199,7 @@ pub fn load_ignores(root: &std::path::Path) -> Vec<String> {
         .collect()
 }
 
-/// Matches a repo-relative path against a `.cltignore` pattern.
+/// Matches a repo-relative path against a `.comtaiignore` pattern.
 ///
 /// Deliberately simple: exact match, directory prefix (`vendor/`), and a
 /// trailing `*` wildcard. Not gitignore semantics — this is a short opt-out
@@ -278,7 +278,7 @@ fn list_files(repo: &Repo) -> Result<Vec<String>> {
         .context("running `git ls-files` (is git on PATH?)")?;
 
     if !out.status.success() {
-        bail!("`git ls-files` failed — clt scan needs a working git repository");
+        bail!("`git ls-files` failed — comtai scan needs a working git repository");
     }
 
     // NUL-separated: filenames may contain newlines, and git will happily
@@ -290,13 +290,13 @@ fn list_files(repo: &Repo) -> Result<Vec<String>> {
         .collect())
 }
 
-/// True if `path` is clt's own metadata, which is never scanned.
+/// True if `path` is comtai's own metadata, which is never scanned.
 ///
-/// `.clt/` holds task titles, which would otherwise harvest themselves.
-/// `.cltignore` is exempt because it documents the marker syntax — the file
+/// `.comtai/` holds task titles, which would otherwise harvest themselves.
+/// `.comtaiignore` is exempt because it documents the marker syntax — the file
 /// whose job is suppressing false positives should not be the source of one.
 pub fn is_own_storage(path: &str) -> bool {
-    path == ".clt" || path.starts_with(".clt/") || path == ".cltignore"
+    path == ".comtai" || path.starts_with(".comtai/") || path == ".comtaiignore"
 }
 
 /// Whether a listed file is one the scan is supposed to read at all.
@@ -315,7 +315,7 @@ mod tests {
 
     #[test]
     fn finds_a_plain_marker() {
-        let hits = scan_text("// TODO(clt): retry on 429 too\n", "src/http.rs");
+        let hits = scan_text("// TODO(comtai): retry on 429 too\n", "src/http.rs");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].title, "retry on 429 too");
         assert_eq!(hits[0].line, 1);
@@ -331,12 +331,12 @@ mod tests {
 
     #[test]
     fn requires_a_separator_after_the_marker() {
-        assert!(scan_text("// TODO(clt)x: nope\n", "a.rs").is_empty());
+        assert!(scan_text("// TODO(comtai)x: nope\n", "a.rs").is_empty());
     }
 
     #[test]
     fn accepts_fixme_and_reports_line_numbers() {
-        let src = "one\ntwo\n/* FIXME(clt) the parser eats commas */\n";
+        let src = "one\ntwo\n/* FIXME(comtai) the parser eats commas */\n";
         let hits = scan_text(src, "p.rs");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].line, 3);
@@ -345,13 +345,13 @@ mod tests {
 
     #[test]
     fn strips_block_and_markup_comment_tails() {
-        assert_eq!(scan_text("/* TODO(clt): a */", "x")[0].title, "a");
-        assert_eq!(scan_text("<!-- TODO(clt): b -->", "x")[0].title, "b");
+        assert_eq!(scan_text("/* TODO(comtai): a */", "x")[0].title, "a");
+        assert_eq!(scan_text("<!-- TODO(comtai): b -->", "x")[0].title, "b");
     }
 
     #[test]
     fn skips_markers_with_nothing_to_say() {
-        assert!(scan_text("// TODO(clt):\n", "x").is_empty());
+        assert!(scan_text("// TODO(comtai):\n", "x").is_empty());
     }
 
     #[test]
@@ -377,9 +377,9 @@ mod tests {
 
     #[test]
     fn markers_inside_string_literals_are_not_harvested() {
-        // The bug this prevents: clt scanning its own test fixtures and filing
+        // The bug this prevents: comtai scanning its own test fixtures and filing
         // tasks titled `retry on 429 too\n", "src/http.rs");`.
-        let src = r#"    let hits = scan_text("// TODO(clt): retry on 429 too\n", "a.rs");"#;
+        let src = r#"    let hits = scan_text("// TODO(comtai): retry on 429 too\n", "a.rs");"#;
         assert!(
             scan_text(src, "src/scan.rs").is_empty(),
             "a marker in a string literal is code, not a comment"
@@ -397,7 +397,7 @@ mod tests {
     #[test]
     fn a_comment_containing_a_quoted_phrase_still_scans() {
         // Balanced quotes before the marker must not disqualify a real comment.
-        let hits = scan_text("// the \"auth\" flow: TODO(clt): fix the retry", "a.rs");
+        let hits = scan_text("// the \"auth\" flow: TODO(comtai): fix the retry", "a.rs");
         assert_eq!(hits.len(), 1, "balanced quotes are not a string literal");
     }
 
@@ -405,7 +405,7 @@ mod tests {
     fn duplicate_markers_collapse_to_one_task() {
         // Two identical markers in one file share a key; the scanner must not
         // report the second as a move of the first, forever.
-        let src = "// TODO(clt): same\n// TODO(clt): same\n";
+        let src = "// TODO(comtai): same\n// TODO(comtai): same\n";
         let hits = scan_text(src, "a.rs");
         assert_eq!(hits.len(), 2, "scan_text reports raw hits");
         assert_eq!(hits[0].key, hits[1].key, "and they share an identity");
@@ -414,21 +414,21 @@ mod tests {
     #[test]
     fn prose_mentions_of_the_marker_are_not_harvested() {
         // Documentation that names the marker shouldn't file a task about it.
-        let src = "//! Harvesting `TODO(clt):` markers out of the source tree.";
+        let src = "//! Harvesting `TODO(comtai):` markers out of the source tree.";
         assert!(scan_text(src, "src/scan.rs").is_empty());
     }
 
     #[test]
     fn recognises_the_comment_styles_people_actually_use() {
         for line in [
-            "// TODO(clt): a",
-            "  # TODO(clt): a",
-            "/* TODO(clt): a */",
-            " * TODO(clt): a",
-            "<!-- TODO(clt): a -->",
-            "-- TODO(clt): a",
-            "; TODO(clt): a",
-            "% TODO(clt): a",
+            "// TODO(comtai): a",
+            "  # TODO(comtai): a",
+            "/* TODO(comtai): a */",
+            " * TODO(comtai): a",
+            "<!-- TODO(comtai): a -->",
+            "-- TODO(comtai): a",
+            "; TODO(comtai): a",
+            "% TODO(comtai): a",
         ] {
             assert_eq!(
                 scan_text(line, "f").len(),
@@ -439,14 +439,14 @@ mod tests {
     }
 
     #[test]
-    fn clt_never_scans_its_own_metadata() {
-        assert!(is_own_storage(".clt/tasks.json"));
-        assert!(is_own_storage(".cltignore"));
-        assert!(!is_own_storage("src/clt.rs"));
+    fn comtai_never_scans_its_own_metadata() {
+        assert!(is_own_storage(".comtai/tasks.json"));
+        assert!(is_own_storage(".comtaiignore"));
+        assert!(!is_own_storage("src/comtai.rs"));
     }
 
     #[test]
-    fn cltignore_matches_files_directories_and_wildcards() {
+    fn comtaiignore_matches_files_directories_and_wildcards() {
         let patterns = vec![
             "README.md".to_string(),
             "vendor/".to_string(),
@@ -469,21 +469,21 @@ mod tests {
 
         assert!(wants("src/http.rs", &patterns));
 
-        // clt's own metadata, which would otherwise harvest itself.
-        assert!(!wants(".clt/tasks.json", &patterns));
-        assert!(!wants(".clt/node_modules/x.js", &patterns));
+        // comtai's own metadata, which would otherwise harvest itself.
+        assert!(!wants(".comtai/tasks.json", &patterns));
+        assert!(!wants(".comtai/node_modules/x.js", &patterns));
 
-        // And `.cltignore` itself, because it documents the marker syntax and
+        // And `.comtaiignore` itself, because it documents the marker syntax and
         // the file that suppresses false positives must not be one.
-        assert!(!wants(".cltignore", &patterns));
+        assert!(!wants(".comtaiignore", &patterns));
 
         assert!(!wants("vendor/lib.js", &patterns));
     }
 
     #[test]
     fn moving_a_marker_between_files_keeps_its_identity() {
-        let a = &scan_text("// TODO(clt): same text", "old.rs")[0];
-        let b = &scan_text("// TODO(clt): same text", "new.rs")[0];
+        let a = &scan_text("// TODO(comtai): same text", "old.rs")[0];
+        let b = &scan_text("// TODO(comtai): same text", "new.rs")[0];
         assert_eq!(a.key, b.key);
         assert_ne!(a.file, b.file);
     }

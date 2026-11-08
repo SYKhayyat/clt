@@ -1,4 +1,4 @@
-//! `clt share` / `clt unshare` — whether the task list travels.
+//! `comtai share` / `comtai unshare` — whether the task list travels.
 //!
 //! The default is a local-only list, which means it dies with the working copy:
 //! clone the repo somewhere else and the tasks are gone. These tests pin down
@@ -16,24 +16,24 @@ fn a_shared_list_survives_a_clone() {
     git_ok(&origin, &["add", "-A"]);
     git_ok(&origin, &["commit", "-qm", "init"]);
 
-    clt_ok(&origin, &["add", "scoped to main"]);
-    clt_ok(&origin, &["add", "visible everywhere", "--repo"]);
+    comtai_ok(&origin, &["add", "scoped to main"]);
+    comtai_ok(&origin, &["add", "visible everywhere", "--repo"]);
 
     assert_eq!(
-        clt_json(&origin, &["path"])["shared"],
+        comtai_json(&origin, &["path"])["shared"],
         false,
         "local-only is the default"
     );
 
-    clt_ok(&origin, &["share"]);
+    comtai_ok(&origin, &["share"]);
     assert!(
-        origin.join(".clt/.gitignore").exists(),
+        origin.join(".comtai/.gitignore").exists(),
         "share must keep per-clone state out of the shared list"
     );
 
-    git_ok(&origin, &["add", ".clt"]);
+    git_ok(&origin, &["add", ".comtai"]);
     git_ok(&origin, &["commit", "-qm", "track the task list"]);
-    assert_eq!(clt_json(&origin, &["path"])["shared"], true);
+    assert_eq!(comtai_json(&origin, &["path"])["shared"], true);
 
     // The whole point of the feature.
     let clone = origin.with_extension("clone");
@@ -66,14 +66,14 @@ fn the_journal_stays_local_when_the_list_is_shared() {
     // deliberately excluded. Losing that would make sharing unusable rather
     // than merely imperfect.
     let dir = repo("share-journal");
-    clt_ok(&dir, &["add", "something"]);
-    clt_ok(&dir, &["share"]);
-    git_ok(&dir, &["add", ".clt"]);
+    comtai_ok(&dir, &["add", "something"]);
+    comtai_ok(&dir, &["share"]);
+    git_ok(&dir, &["add", ".comtai"]);
 
     let staged = String::from_utf8_lossy(&git(&dir, &["diff", "--cached", "--name-only"]).stdout)
         .into_owned();
     assert!(
-        staged.contains(".clt/tasks.json"),
+        staged.contains(".comtai/tasks.json"),
         "the list itself must be staged; got:\n{staged}"
     );
     assert!(
@@ -85,14 +85,14 @@ fn the_journal_stays_local_when_the_list_is_shared() {
 
 #[test]
 fn adding_a_task_in_a_clone_does_not_silently_re_exclude_the_list() {
-    // save() adds the exclude entry when it creates .clt/ for the first time.
+    // save() adds the exclude entry when it creates .comtai/ for the first time.
     // In a clone that directory arrives with the checkout, so the entry must
-    // never be written — otherwise the first `clt add` after cloning would
+    // never be written — otherwise the first `comtai add` after cloning would
     // quietly unshare the list the project had decided to share.
     let origin = repo("share-reexclude");
-    clt_ok(&origin, &["add", "from origin"]);
-    clt_ok(&origin, &["share"]);
-    git_ok(&origin, &["add", ".clt"]);
+    comtai_ok(&origin, &["add", "from origin"]);
+    comtai_ok(&origin, &["share"]);
+    git_ok(&origin, &["add", ".comtai"]);
     git_ok(&origin, &["commit", "-qm", "track"]);
 
     let clone = origin.with_extension("clone");
@@ -107,14 +107,14 @@ fn adding_a_task_in_a_clone_does_not_silently_re_exclude_the_list() {
         ],
     );
 
-    clt_ok(&clone, &["add", "filed in the clone"]);
+    comtai_ok(&clone, &["add", "filed in the clone"]);
 
     let exclude = std::fs::read_to_string(clone.join(".git/info/exclude")).unwrap_or_default();
     assert!(
-        !exclude.contains(".clt"),
+        !exclude.contains(".comtai"),
         "a write in a clone must leave the list shared; exclude was:\n{exclude}"
     );
-    assert_eq!(clt_json(&clone, &["path"])["shared"], true);
+    assert_eq!(comtai_json(&clone, &["path"])["shared"], true);
 
     cleanup(&origin);
     cleanup(&clone);
@@ -123,28 +123,28 @@ fn adding_a_task_in_a_clone_does_not_silently_re_exclude_the_list() {
 #[test]
 fn unshare_puts_the_exclude_back_and_share_can_undo_it_again() {
     let dir = repo("share-roundtrip");
-    clt_ok(&dir, &["add", "a task"]);
+    comtai_ok(&dir, &["add", "a task"]);
 
     let exclude = dir.join(".git/info/exclude");
     assert!(
-        std::fs::read_to_string(&exclude).unwrap_or_default().contains(".clt/"),
+        std::fs::read_to_string(&exclude).unwrap_or_default().contains(".comtai/"),
         "the default is local-only"
     );
 
-    clt_ok(&dir, &["share"]);
+    comtai_ok(&dir, &["share"]);
     assert!(
-        !std::fs::read_to_string(&exclude).unwrap_or_default().contains(".clt/"),
+        !std::fs::read_to_string(&exclude).unwrap_or_default().contains(".comtai/"),
         "share must lift the exclusion"
     );
 
-    clt_ok(&dir, &["unshare"]);
+    comtai_ok(&dir, &["unshare"]);
     assert!(
-        std::fs::read_to_string(&exclude).unwrap_or_default().contains(".clt/"),
+        std::fs::read_to_string(&exclude).unwrap_or_default().contains(".comtai/"),
         "unshare must restore it"
     );
 
     // And round-tripping must not have eaten anyone else's patterns.
-    clt_ok(&dir, &["share"]);
+    comtai_ok(&dir, &["share"]);
     cleanup(&dir);
 }
 
@@ -155,28 +155,28 @@ fn unexclude_leaves_other_peoples_patterns_alone() {
     std::fs::create_dir_all(exclude.parent().unwrap()).unwrap();
     std::fs::write(&exclude, "# mine\nscratch/\n*.local\n").unwrap();
 
-    clt_ok(&dir, &["add", "a task"]); // writes clt's own entry
-    clt_ok(&dir, &["share"]); // and takes it back out
+    comtai_ok(&dir, &["add", "a task"]); // writes comtai's own entry
+    comtai_ok(&dir, &["share"]); // and takes it back out
 
     let after = std::fs::read_to_string(&exclude).unwrap();
     assert!(after.contains("scratch/"), "lost a pattern:\n{after}");
     assert!(after.contains("*.local"), "lost a pattern:\n{after}");
     assert!(after.contains("# mine"), "lost a comment:\n{after}");
-    assert!(!after.contains(".clt"), "kept our own:\n{after}");
+    assert!(!after.contains(".comtai"), "kept our own:\n{after}");
     cleanup(&dir);
 }
 
 #[test]
 fn share_reports_a_project_gitignore_it_cannot_override() {
-    // clt only writes info/exclude. A committed .gitignore listing .clt/ is the
+    // comtai only writes info/exclude. A committed .gitignore listing .comtai/ is the
     // project's decision, and share has to say so rather than appearing to work.
     let dir = repo("share-blocked");
-    write(&dir, ".gitignore", "/target\n.clt/\n");
+    write(&dir, ".gitignore", "/target\n.comtai/\n");
     git_ok(&dir, &["add", "-A"]);
-    git_ok(&dir, &["commit", "-qm", "ignore clt"]);
-    clt_ok(&dir, &["add", "a task"]);
+    git_ok(&dir, &["commit", "-qm", "ignore comtai"]);
+    comtai_ok(&dir, &["add", "a task"]);
 
-    let reported = clt_json(&dir, &["share"]);
+    let reported = comtai_json(&dir, &["share"]);
     assert_eq!(
         reported["blocked_by"], ".gitignore",
         "share must name the file that is still ignoring the list"

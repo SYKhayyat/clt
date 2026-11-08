@@ -37,7 +37,7 @@ fn git(cwd: &Path, args: &[&str]) -> Result<Option<String>> {
 /// [`git`], except that printing nothing is an answer rather than a silence.
 ///
 /// `git log <mark>..HEAD` with nothing new exits 0 and prints nothing, and that
-/// is the *ordinary* case for `clt sync` on a repository nobody has committed
+/// is the *ordinary* case for `comtai sync` on a repository nobody has committed
 /// to since. Reading it the way `git` does — as a failure — makes every quiet
 /// sync indistinguishable from a walk that never happened, which is exactly the
 /// distinction #2 is about.
@@ -66,8 +66,8 @@ fn git_answer(cwd: &Path, args: &[&str]) -> Result<Option<String>> {
 ///
 /// Git answers in forward slashes everywhere, including on Windows, where
 /// everything we join onto its answer uses a backslash. Left alone the two meet
-/// inside a single string — `C:/code/app\.clt\tasks.json` — and that string is
-/// what `clt path` prints and what `clt path --json` hands to whatever is
+/// inside a single string — `C:/code/app\.comtai\tasks.json` — and that string is
+/// what `comtai path` prints and what `comtai path --json` hands to whatever is
 /// consuming it. Both separators work when *opening* the file, so this is
 /// cosmetic; it is fixed at the boundary anyway, because the alternative is
 /// every printing site remembering to tidy up after this one.
@@ -88,7 +88,7 @@ fn native(path: &str) -> PathBuf {
 /// Finds the repo containing `cwd`, if any.
 ///
 /// Process spawns dominate this tool's startup — on Windows each `git`
-/// invocation costs tens of milliseconds, and `clt` runs dozens of times a day
+/// invocation costs tens of milliseconds, and `comtai` runs dozens of times a day
 /// — so the two path queries are answered by a single `rev-parse`, which
 /// returns one result per line.
 ///
@@ -109,7 +109,7 @@ pub fn discover(cwd: &Path) -> Result<Option<Repo>> {
 
     // Git prints `--git-common-dir` relative to the *current directory*, so it
     // must be resolved against `cwd`, not the worktree root — those differ
-    // whenever clt is run from a subdirectory.
+    // whenever comtai is run from a subdirectory.
     let common = lines
         .next()
         .map(str::trim)
@@ -134,7 +134,7 @@ pub fn discover(cwd: &Path) -> Result<Option<Repo>> {
 }
 
 impl Repo {
-    /// Ensures `.clt/` is ignored locally, via `.git/info/exclude`.
+    /// Ensures `.comtai/` is ignored locally, via `.git/info/exclude`.
     ///
     /// Deliberately not `.gitignore`: that file is committed, and silently
     /// editing a tracked file to install our own storage would be rude and
@@ -143,7 +143,7 @@ impl Repo {
     /// line, and we won't put it back (we only append when it's absent).
     ///
     /// Best-effort: a read-only or exotic git dir is not a reason to fail a
-    /// `clt add`.
+    /// `comtai add`.
     pub fn ensure_excluded(&self) {
         let info = self.git_common_dir.join("info");
         let exclude = info.join("exclude");
@@ -151,7 +151,7 @@ impl Repo {
         let current = std::fs::read_to_string(&exclude).unwrap_or_default();
         if current
             .lines()
-            .any(|l| matches!(l.trim(), ".clt/" | ".clt" | "/.clt/" | "/.clt"))
+            .any(|l| matches!(l.trim(), ".comtai/" | ".comtai" | "/.comtai/" | "/.comtai"))
         {
             return;
         }
@@ -164,7 +164,7 @@ impl Repo {
         if !next.is_empty() && !next.ends_with('\n') {
             next.push('\n');
         }
-        next.push_str("\n# clt task list (local only; delete this line to commit it)\n.clt/\n");
+        next.push_str("\n# comtai task list (local only; delete this line to commit it)\n.comtai/\n");
         let _ = std::fs::write(&exclude, next);
     }
 
@@ -183,13 +183,13 @@ impl Repo {
         let mut removed = false;
         for line in current.lines() {
             let t = line.trim();
-            if matches!(t, ".clt/" | ".clt" | "/.clt/" | "/.clt") {
+            if matches!(t, ".comtai/" | ".comtai" | "/.comtai/" | "/.comtai") {
                 removed = true;
                 continue;
             }
             // Our own comment, which would otherwise be left dangling above
             // whatever pattern happens to follow it.
-            if t.starts_with("# clt task list") {
+            if t.starts_with("# comtai task list") {
                 removed = true;
                 continue;
             }
@@ -213,7 +213,7 @@ impl Repo {
     /// This is how "is the task list shared?" is answered. Deriving it from git
     /// rather than storing a flag of our own means the answer cannot drift from
     /// reality — someone who runs `git rm --cached` by hand has unshared the
-    /// list, and clt should agree with them.
+    /// list, and comtai should agree with them.
     pub fn is_tracked(&self, rel: &str) -> bool {
         matches!(
             git(&self.root, &["ls-files", "--error-unmatch", "--", rel]),
@@ -224,9 +224,9 @@ impl Repo {
     /// True when `rel` is ignored, by any mechanism: `.gitignore`, a nested
     /// ignore file, the global excludes, or `info/exclude`.
     ///
-    /// Needed because clt only ever writes to `info/exclude`, and cannot undo an
+    /// Needed because comtai only ever writes to `info/exclude`, and cannot undo an
     /// entry in a *committed* `.gitignore` — that file belongs to the project,
-    /// not to us. Detecting it is what lets `clt share` say so instead of
+    /// not to us. Detecting it is what lets `comtai share` say so instead of
     /// appearing to work and silently doing nothing.
     pub fn ignore_source(&self, rel: &str) -> Option<String> {
         // `check-ignore -v` prints `<source>:<line>:<pattern>\t<path>`.
@@ -243,7 +243,7 @@ impl Repo {
     /// `None` means **git could not answer**, which is not the same as "there
     /// are no commits" (#2). A `since` that no longer exists — the ordinary
     /// result of a rebase or a force-push — makes `git log <sha>..HEAD` fail,
-    /// and folding that failure into an empty history let `clt sync` advance
+    /// and folding that failure into an empty history let `comtai sync` advance
     /// its watermark to HEAD and skip every commit in between for ever. An
     /// unborn HEAD is the other way round: it has no commits to walk, and an
     /// empty answer is the truth.
@@ -337,7 +337,7 @@ mod tests {
     fn a_git_path_joins_without_mixing_separators() {
         // The shape git hands us on Windows. Whatever we join onto it has to
         // come out in one separator style, because this string gets printed.
-        let joined = native("C:/code/app").join(".clt").join("tasks.json");
+        let joined = native("C:/code/app").join(".comtai").join("tasks.json");
         let shown = joined.display().to_string();
         assert!(
             !(shown.contains('/') && shown.contains('\\')),

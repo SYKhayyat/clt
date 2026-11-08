@@ -1,7 +1,7 @@
 //! Shared scaffolding for the integration tests.
 //!
 //! These tests drive the real binary in a real repository, because most of what
-//! is worth testing here lives in the seam between clt and git — branch
+//! is worth testing here lives in the seam between comtai and git — branch
 //! scoping, `git ls-files`, `info/exclude`, whether a list survives a clone.
 //! None of that is reachable from a unit test.
 
@@ -10,11 +10,11 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-pub const CLT: &str = env!("CARGO_BIN_EXE_clt");
+pub const COMTAI: &str = env!("CARGO_BIN_EXE_comtai");
 
 /// A throwaway git repo. Named per test so parallel tests never share one.
 pub fn repo(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("clt-it-{}-{name}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("comtai-it-{}-{name}", std::process::id()));
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(&dir).unwrap();
     init_repo(&dir);
@@ -51,39 +51,39 @@ pub fn git_ok(dir: &Path, args: &[&str]) {
     );
 }
 
-pub fn clt(dir: &Path, args: &[&str]) -> Output {
-    Command::new(CLT)
+pub fn comtai(dir: &Path, args: &[&str]) -> Output {
+    Command::new(COMTAI)
         .args(args)
         .current_dir(dir)
         .stdin(Stdio::null())
         .output()
-        .expect("running clt")
+        .expect("running comtai")
 }
 
-/// Runs clt and returns stdout, insisting on a zero exit.
-pub fn clt_ok(dir: &Path, args: &[&str]) -> String {
-    let out = clt(dir, args);
+/// Runs comtai and returns stdout, insisting on a zero exit.
+pub fn comtai_ok(dir: &Path, args: &[&str]) -> String {
+    let out = comtai(dir, args);
     assert!(
         out.status.success(),
-        "clt {args:?} failed: {}",
+        "comtai {args:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// Runs clt with `--json` and parses the result.
-pub fn clt_json(dir: &Path, args: &[&str]) -> serde_json::Value {
+/// Runs comtai with `--json` and parses the result.
+pub fn comtai_json(dir: &Path, args: &[&str]) -> serde_json::Value {
     let mut argv = args.to_vec();
     argv.push("--json");
-    let stdout = clt_ok(dir, &argv);
+    let stdout = comtai_ok(dir, &argv);
     serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        panic!("clt {argv:?} did not emit JSON ({e}); stdout was:\n{stdout}")
+        panic!("comtai {argv:?} did not emit JSON ({e}); stdout was:\n{stdout}")
     })
 }
 
 /// Every task in the list, across branches and states.
 pub fn all_tasks(dir: &Path) -> Vec<serde_json::Value> {
-    clt_json(dir, &["ls", "--all", "--done"])
+    comtai_json(dir, &["ls", "--all", "--done"])
         .as_array()
         .expect("ls --json returns an array")
         .clone()

@@ -1,7 +1,7 @@
 //! Command-line surface.
 //!
 //! Two rules shape everything here. First, the verbs you use twenty times a day
-//! (`clt`, `clt add`, `clt done`) are short and take no mandatory flags.
+//! (`comtai`, `comtai add`, `comtai done`) are short and take no mandatory flags.
 //! Second, every read command can emit `--json`, because that — not a plugin
 //! API — is how other tools and agents are meant to build on this.
 
@@ -11,14 +11,14 @@ use crate::task::State;
 
 #[derive(Debug, Parser)]
 #[command(
-    name = "clt",
+    name = "comtai",
     version,
     about = "Branch-scoped tasks that live in your repo",
-    long_about = "clt keeps a task list in .clt/tasks.json inside the current repo.\n\
+    long_about = "comtai keeps a task list in .comtai/tasks.json inside the current repo.\n\
                   Tasks are scoped to the branch you filed them on, so switching\n\
                   branches switches your list. Your coding agent can read and write\n\
-                  the same list via `clt --json` or `clt mcp`.",
-    // With no subcommand, `clt` lists. That's the command you actually run.
+                  the same list via `comtai --json` or `comtai mcp`.",
+    // With no subcommand, `comtai` lists. That's the command you actually run.
     args_conflicts_with_subcommands = true,
     subcommand_negates_reqs = true
 )]
@@ -32,9 +32,9 @@ pub struct Cli {
 
     /// Who is making this change. Renders as a tag and lands in the journal.
     ///
-    /// Set `CLT_ACTOR=claude` in an agent's environment and everything it files
+    /// Set `COMTAI_ACTOR=claude` in an agent's environment and everything it files
     /// is attributed automatically.
-    #[arg(long, short = 'A', global = true, env = "CLT_ACTOR")]
+    #[arg(long, short = 'A', global = true, env = "COMTAI_ACTOR")]
     pub actor: Option<String>,
 
     /// Emit machine-readable JSON instead of a table.
@@ -52,7 +52,7 @@ pub enum Command {
     #[command(visible_alias = "a")]
     Add(AddArgs),
 
-    /// List tasks (the default when you run bare `clt`)
+    /// List tasks (the default when you run bare `comtai`)
     #[command(visible_alias = "ls")]
     List(ListArgs),
 
@@ -84,10 +84,10 @@ pub enum Command {
     /// Move tasks between a branch and the whole repo
     Scope(ScopeArgs),
 
-    /// Harvest `TODO(clt):` markers from the source into tasks
+    /// Harvest `TODO(comtai):` markers from the source into tasks
     Scan(ScanArgs),
 
-    /// Close tasks referenced by new commit messages ("closes clt#3")
+    /// Close tasks referenced by new commit messages ("closes comtai#3")
     Sync(SyncArgs),
 
     /// Show the audit log of who changed what
@@ -102,7 +102,7 @@ pub enum Command {
     /// Go back to a local-only task list that is never committed
     Unshare,
 
-    /// Create .clt/ with sample hooks and a README
+    /// Create .comtai/ with sample hooks and a README
     Init,
 
     /// Serve the task list to an agent over MCP (stdio)
@@ -220,7 +220,7 @@ pub struct MoveArgs {
 
 /// Where a task lives: one branch, or the whole repo.
 ///
-/// Exactly one of these is required. Left to default, `clt scope 3` would be a
+/// Exactly one of these is required. Left to default, `comtai scope 3` would be a
 /// coin flip between two irreversible-looking outcomes, and the error clap
 /// generates for a missing group is better than any guess.
 #[derive(Debug, Args)]

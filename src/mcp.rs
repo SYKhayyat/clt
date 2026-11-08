@@ -1,12 +1,12 @@
 //! MCP server over stdio.
 //!
 //! This is the half of the product that isn't a CLI. An agent shelling out to
-//! `clt add` works, but it has to *know* to do that; an MCP server puts the
+//! `comtai add` works, but it has to *know* to do that; an MCP server puts the
 //! task list in its tool list, where it belongs.
 //!
 //! Hand-rolled JSON-RPC rather than an SDK. The stdio transport is
 //! newline-delimited JSON and the surface we need is four methods, which is
-//! genuinely less code than wiring up an async runtime — and it keeps `clt`
+//! genuinely less code than wiring up an async runtime — and it keeps `comtai`
 //! free of tokio, which matters when the same binary has to start in a
 //! millisecond for interactive use.
 //!
@@ -115,7 +115,7 @@ fn dispatch(method: &str, params: &Value, global: bool) -> Result<Value, RpcErro
             Ok(json!({
                 "protocolVersion": protocol,
                 "capabilities": { "tools": {} },
-                "serverInfo": { "name": "clt", "version": env!("CARGO_PKG_VERSION") }
+                "serverInfo": { "name": "comtai", "version": env!("CARGO_PKG_VERSION") }
             }))
         }
         "ping" => Ok(json!({})),
@@ -149,7 +149,7 @@ fn dispatch(method: &str, params: &Value, global: bool) -> Result<Value, RpcErro
 fn tool_definitions() -> Value {
     json!([
         {
-            "name": "clt_list",
+            "name": "comtai_list",
             "description": "List tasks for the current git branch. Repo-wide tasks always \
                             appear. Returns JSON including each task's id, state, parent \
                             (for nesting) and source location.",
@@ -162,7 +162,7 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "clt_add",
+            "name": "comtai_add",
             "description": "File a task on the current branch. Use this when you find work \
                             you are not doing right now — a bug you noticed in passing, a \
                             follow-up, something the user should decide. Set `file` to the \
@@ -180,7 +180,7 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "clt_close",
+            "name": "comtai_close",
             "description": "Mark tasks done. Closing a task also closes everything nested \
                             under it.",
             "inputSchema": {
@@ -192,7 +192,7 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "clt_start",
+            "name": "comtai_start",
             "description": "Mark a task as in progress.",
             "inputSchema": {
                 "type": "object",
@@ -201,7 +201,7 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "clt_reopen",
+            "name": "comtai_reopen",
             "description": "Move tasks back to todo. Use this when you closed something \
                             prematurely, or when work you thought was finished turned out \
                             not to be. Reopening a parent does not reopen its subtasks.",
@@ -214,7 +214,7 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "clt_edit",
+            "name": "comtai_edit",
             "description": "Change an existing task. Use this to correct or sharpen a task \
                             rather than closing it and filing a replacement, which loses its \
                             history. Only the fields you pass are changed.",
@@ -235,7 +235,7 @@ fn tool_definitions() -> Value {
             }
         },
         {
-            "name": "clt_search",
+            "name": "comtai_search",
             "description": "Search every branch for tasks matching text in their title, \
                             note or file path.",
             "inputSchema": {
@@ -263,7 +263,7 @@ fn open(global: bool, access: Access) -> Result<Store> {
         crate::render::note(warning);
     }
 
-    // A read does not write (#4). `clt_list` and `clt_search` are the two tools
+    // A read does not write (#4). `comtai_list` and `comtai_search` are the two tools
     // an agent polls in a loop, and they opened with `Access::Read` and then
     // saved anyway whenever a repair was pending — `save` borrows the write
     // lock when the store has none, so a *read* queued behind real writers,
@@ -284,7 +284,7 @@ fn open(global: bool, access: Access) -> Result<Store> {
 /// it would defeat the point of the journal.
 fn actor() -> Option<String> {
     Some(
-        std::env::var("CLT_ACTOR")
+        std::env::var("COMTAI_ACTOR")
             .ok()
             .filter(|s| !s.trim().is_empty())
             .unwrap_or_else(|| "agent".into()),
@@ -320,7 +320,7 @@ fn call_tool(name: &str, args: &Value, global: bool) -> Result<String> {
     // and so the write lock is held for one tool call, not for the lifetime of
     // the agent's session.
     let access = match name {
-        "clt_list" | "clt_search" => Access::Read,
+        "comtai_list" | "comtai_search" => Access::Read,
         _ => Access::Write,
     };
     let mut store = open(global, access)?;
@@ -328,7 +328,7 @@ fn call_tool(name: &str, args: &Value, global: bool) -> Result<String> {
     let who = actor();
 
     match name {
-        "clt_list" => {
+        "comtai_list" => {
             let all = args.get("all").and_then(Value::as_bool).unwrap_or(false);
             let include_done = args
                 .get("include_done")
@@ -355,7 +355,7 @@ fn call_tool(name: &str, args: &Value, global: bool) -> Result<String> {
             }))?)
         }
 
-        "clt_add" => {
+        "comtai_add" => {
             let title = args
                 .get("title")
                 .and_then(Value::as_str)
@@ -411,13 +411,13 @@ fn call_tool(name: &str, args: &Value, global: bool) -> Result<String> {
             Ok(serde_json::to_string_pretty(&t)?)
         }
 
-        "clt_close" | "clt_start" | "clt_reopen" => {
+        "comtai_close" | "comtai_start" | "comtai_reopen" => {
             let state = match name {
-                "clt_close" => State::Done,
-                "clt_start" => State::Doing,
+                "comtai_close" => State::Done,
+                "comtai_start" => State::Doing,
                 _ => State::Todo,
             };
-            // `clt_start` takes a single id and the other two take a list, which
+            // `comtai_start` takes a single id and the other two take a list, which
             // is a wart in the published schema rather than a distinction worth
             // anything. Both spellings are accepted everywhere so a model that
             // guesses the wrong one gets its work done instead of an error.
@@ -449,7 +449,7 @@ fn call_tool(name: &str, args: &Value, global: bool) -> Result<String> {
             Ok(serde_json::to_string_pretty(&touched)?)
         }
 
-        "clt_edit" => {
+        "comtai_edit" => {
             let id = args
                 .get("id")
                 .and_then(Value::as_u64)
@@ -540,7 +540,7 @@ fn call_tool(name: &str, args: &Value, global: bool) -> Result<String> {
             Ok(serde_json::to_string_pretty(store.require(id)?)?)
         }
 
-        "clt_search" => {
+        "comtai_search" => {
             let needle = args
                 .get("query")
                 .and_then(Value::as_str)

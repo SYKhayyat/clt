@@ -5,7 +5,7 @@
 //! about field names, and both drift the same way: a field gets added to
 //! `Task`, `serde` starts emitting it, every test still passes, and the
 //! documentation quietly describes a subset of reality. That is how `origin` and
-//! `actor` — one of them on every row, and the one that makes `clt scan`
+//! `actor` — one of them on every row, and the one that makes `comtai scan`
 //! idempotent — went undocumented for six commits.
 //!
 //! So this compares the emitted key set to the README itself rather than to a
@@ -20,17 +20,17 @@ use std::collections::BTreeSet;
 const README: &str = include_str!("../README.md");
 
 /// A repo holding at least one task per optional field, so the union of emitted
-/// keys is the whole model and not just the fields a plain `clt add` sets.
+/// keys is the whole model and not just the fields a plain `comtai add` sets.
 fn exercised(name: &str) -> std::path::PathBuf {
     let dir = repo(name);
-    write(&dir, "src.rs", "// TODO(clt): harvested, so origin is a scan\n");
+    write(&dir, "src.rs", "// TODO(comtai): harvested, so origin is a scan\n");
     git_ok(&dir, &["add", "-A"]);
     git_ok(&dir, &["commit", "-qm", "init"]);
 
     // Plain: only the required fields.
-    clt_ok(&dir, &["add", "a plain task"]);
+    comtai_ok(&dir, &["add", "a plain task"]);
     // note, location, parent, actor.
-    clt_ok(&dir, &[
+    comtai_ok(&dir, &[
         "add",
         "a detailed task",
         "--note",
@@ -43,15 +43,15 @@ fn exercised(name: &str) -> std::path::PathBuf {
         "claude",
     ]);
     // No branch at all: repo-wide.
-    clt_ok(&dir, &["add", "a repo-wide task", "--repo"]);
+    comtai_ok(&dir, &["add", "a repo-wide task", "--repo"]);
     // origin = scan, actor = scan.
-    clt_ok(&dir, &["scan"]);
+    comtai_ok(&dir, &["scan"]);
     // closed_by: a commit that closes a task by reference.
-    clt_ok(&dir, &["add", "closed by a commit"]);
+    comtai_ok(&dir, &["add", "closed by a commit"]);
     write(&dir, "more.rs", "fixed\n");
     git_ok(&dir, &["add", "-A"]);
-    git_ok(&dir, &["commit", "-qm", "do the thing\n\ncloses clt#5"]);
-    clt_ok(&dir, &["sync"]);
+    git_ok(&dir, &["commit", "-qm", "do the thing\n\ncloses comtai#5"]);
+    comtai_ok(&dir, &["sync"]);
 
     dir
 }
@@ -124,7 +124,7 @@ fn origin_says_where_a_task_came_from() {
     // `origin` is the field the docs most need: it is what makes a rescan close
     // a harvested task instead of filing a second one, and `origin.key` is
     // derived from the marker text. A hand-edit that drops it silently changes
-    // what the next `clt scan` does.
+    // what the next `comtai scan` does.
     let dir = exercised("contract-origin");
     let tasks = all_tasks(&dir);
 
@@ -152,24 +152,24 @@ fn path_json_does_not_mix_separators() {
     // cosmetic when you open the file and ugly when you print it — and this
     // command exists to be printed and parsed.
     let dir = exercised("contract-path");
-    let path = clt_json(&dir, &["path"]);
+    let path = comtai_json(&dir, &["path"]);
 
     for field in ["dir", "tasks"] {
         let value = path[field].as_str().unwrap_or_else(|| {
-            panic!("clt path --json has no string {field:?}: {path}")
+            panic!("comtai path --json has no string {field:?}: {path}")
         });
         assert!(
             !(value.contains('/') && value.contains('\\')),
-            "clt path --json {field:?} mixes separators: {value:?}"
+            "comtai path --json {field:?} mixes separators: {value:?}"
         );
     }
 
     // And the plain rendering, which is the same path through `Display`.
-    let printed = clt_ok(&dir, &["path"]);
+    let printed = comtai_ok(&dir, &["path"]);
     let printed = printed.trim();
     assert!(
         !(printed.contains('/') && printed.contains('\\')),
-        "clt path mixes separators: {printed:?}"
+        "comtai path mixes separators: {printed:?}"
     );
 
     cleanup(&dir);

@@ -1,4 +1,4 @@
-# PLAN — clt (work top to bottom, one issue per worker session)
+# PLAN — comtai (work top to bottom, one issue per worker session)
 
 Worker loop: top unchecked item only, fix + resolving test, commit, check off, stop. Routing: see AI_ISSUE_ROUTING.md.
 

@@ -1,4 +1,4 @@
-//! Append-only audit log at `.clt/log.jsonl`.
+//! Append-only audit log at `.comtai/log.jsonl`.
 //!
 //! This exists because the headline feature is that something *other than you*
 //! writes to your task list. The moment an agent can close tasks unsupervised,
@@ -128,7 +128,7 @@ fn try_append(dir: &Path, entries: &[Entry]) -> std::io::Result<()> {
         }
     }
     // One write for the batch: on every platform we target, a single small
-    // append to a file opened O_APPEND won't interleave with a concurrent clt.
+    // append to a file opened O_APPEND won't interleave with a concurrent comtai.
     file.write_all(buf.as_bytes())
 }
 
@@ -152,12 +152,12 @@ fn rotate_if_large(dir: &Path) {
 /// Reads the last `limit` entries, oldest first.
 ///
 /// Skips unparseable lines instead of failing: a truncated final line from an
-/// interrupted write shouldn't make `clt log` useless.
+/// interrupted write shouldn't make `comtai log` useless.
 pub fn tail(dir: &Path, limit: usize) -> Vec<Entry> {
     let mut entries = read_entries(&dir.join(FILE));
 
     // Reach back into the previous generation only when the live log cannot
-    // satisfy the request on its own, so the common `clt log` stays a single
+    // satisfy the request on its own, so the common `comtai log` stays a single
     // read of a file that was just capped in size.
     if entries.len() < limit {
         let mut older = read_entries(&dir.join(ROTATED));
@@ -192,7 +192,7 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("clt-journal-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("comtai-journal-{}-{name}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn tail_reads_across_a_rotation() {
         // The entries either side of a rotation are one continuous history, and
-        // `clt log -n 20` must not go blank the moment the log rolls over.
+        // `comtai log -n 20` must not go blank the moment the log rolls over.
         let dir = scratch("tail-across");
         let older: Vec<String> = (1..=5)
             .map(|n| serde_json::to_string(&entry(n)).unwrap())

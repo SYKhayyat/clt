@@ -16,16 +16,16 @@ use common::*;
 fn expect_json(dir: &std::path::Path, args: &[&str]) -> serde_json::Value {
     let mut argv = args.to_vec();
     argv.push("--json");
-    let out = clt(dir, &argv);
+    let out = comtai(dir, &argv);
     let stdout = String::from_utf8_lossy(&out.stdout);
 
     assert!(
         out.status.success(),
-        "clt {argv:?} failed: {}",
+        "comtai {argv:?} failed: {}",
         String::from_utf8_lossy(&out.stderr)
     );
     serde_json::from_str(&stdout).unwrap_or_else(|e| {
-        panic!("clt {argv:?} put non-JSON on stdout ({e}):\n{stdout}")
+        panic!("comtai {argv:?} put non-JSON on stdout ({e}):\n{stdout}")
     })
 }
 
@@ -75,8 +75,8 @@ fn a_no_op_state_change_still_returns_json() {
     // The original leak: closing an already-closed task printed "Already done."
     // onto stdout and exited 0.
     let dir = seeded("json-noop");
-    clt_ok(&dir, &["add", "a task"]);
-    clt_ok(&dir, &["done", "1"]);
+    comtai_ok(&dir, &["add", "a task"]);
+    comtai_ok(&dir, &["done", "1"]);
 
     let repeated = expect_json(&dir, &["done", "1"]);
     assert_eq!(
@@ -88,7 +88,7 @@ fn a_no_op_state_change_still_returns_json() {
 
     // Same shape as the call that did change something, so a consumer can treat
     // both identically.
-    clt_ok(&dir, &["add", "another"]);
+    comtai_ok(&dir, &["add", "another"]);
     assert!(expect_json(&dir, &["done", "2"]).is_array());
 
     // And the same on the other two transitions.
@@ -102,7 +102,7 @@ fn a_no_op_state_change_still_returns_json() {
 #[test]
 fn a_no_op_re_scope_still_returns_json() {
     let dir = seeded("json-noop-scope");
-    clt_ok(&dir, &["add", "a task", "--repo"]);
+    comtai_ok(&dir, &["add", "a task", "--repo"]);
     assert_eq!(expect_json(&dir, &["scope", "1", "--repo"]), serde_json::json!([]));
     cleanup(&dir);
 }
@@ -118,16 +118,16 @@ fn errors_stay_on_stderr_and_set_a_failing_exit_code() {
         vec!["scope", "999", "--repo", "--json"],
         vec!["move", "999", "--root", "--json"],
     ] {
-        let out = clt(&dir, &args);
-        assert!(!out.status.success(), "clt {args:?} should have failed");
+        let out = comtai(&dir, &args);
+        assert!(!out.status.success(), "comtai {args:?} should have failed");
         assert!(
             out.stdout.is_empty(),
-            "clt {args:?} wrote to stdout on failure: {}",
+            "comtai {args:?} wrote to stdout on failure: {}",
             String::from_utf8_lossy(&out.stdout)
         );
         assert!(
             !String::from_utf8_lossy(&out.stderr).is_empty(),
-            "clt {args:?} failed without saying why"
+            "comtai {args:?} failed without saying why"
         );
     }
     cleanup(&dir);

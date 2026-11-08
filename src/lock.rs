@@ -1,7 +1,7 @@
 //! A cross-process lock over the task list.
 //!
 //! The headline feature of this tool is that something other than you writes to
-//! your list. That makes `clt add` from your shell racing `clt_add` from an
+//! your list. That makes `comtai add` from your shell racing `comtai_add` from an
 //! agent the *normal* case rather than an exotic one, and a task list is a
 //! read-modify-write cycle: load the file, change one field, write it back. Two
 //! of those interleaved silently lose whichever landed first.
@@ -21,7 +21,7 @@ use std::time::{Duration, SystemTime};
 
 /// How long to wait for a competing writer before giving up.
 ///
-/// Generous, because the thing we are usually queued behind is another `clt`
+/// Generous, because the thing we are usually queued behind is another `comtai`
 /// run whose critical section is a few milliseconds. Anything approaching this
 /// bound means a real problem, and the error says so rather than hanging
 /// forever.
@@ -92,8 +92,8 @@ impl Lock {
                     }
                     if SystemTime::now() >= deadline {
                         bail!(
-                            "timed out waiting for another clt process to finish writing\n\
-                             (lock: {}) — if no other clt is running, delete that file",
+                            "timed out waiting for another comtai process to finish writing\n\
+                             (lock: {}) — if no other comtai is running, delete that file",
                             path.display()
                         );
                     }
@@ -103,7 +103,7 @@ impl Lock {
                 // open handle as ACCESS_DENIED rather than ALREADY_EXISTS, so
                 // arriving in the instant another process releases the lock
                 // lands here rather than above. Treating it as fatal made two
-                // back-to-back `clt add`s fail outright, which is precisely the
+                // back-to-back `comtai add`s fail outright, which is precisely the
                 // contention this type exists to absorb.
                 Err(e) if is_transient(&e) && SystemTime::now() < deadline => {
                     std::thread::sleep(poll);
@@ -176,7 +176,7 @@ mod tests {
     use super::*;
 
     fn scratch(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("clt-lock-{}-{name}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("comtai-lock-{}-{name}", std::process::id()));
         std::fs::remove_dir_all(&dir).ok();
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -205,7 +205,7 @@ mod tests {
 
     #[test]
     fn a_lock_left_by_a_dead_process_is_reclaimed() {
-        // The scenario: someone killed clt mid-write. Nothing will ever remove
+        // The scenario: someone killed comtai mid-write. Nothing will ever remove
         // this file, so acquire() has to be able to take it over or the tool is
         // wedged permanently.
         let dir = scratch("stale");
