@@ -6,3 +6,5 @@
 # in particular defeat quote-counting by design, which is what this file is for.
 README.md
 src/scan.rs
+docs/
+.github/
