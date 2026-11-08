@@ -117,3 +117,37 @@ fn switching_branches_does_not_churn_scanned_tasks() {
     assert_eq!(all_tasks(&dir).len(), 2, "and no duplicates accumulated");
     cleanup(&dir);
 }
+
+/// A marker in a file the scan is told not to look at is never harvested (#3).
+///
+/// `.cltignore` and clt's own storage are excluded file by file. That exclusion
+/// used to be applied to the finished hits, so every file in `git ls-files` was
+/// read and most of it thrown away; it is applied before the read now. The hits
+/// have to be identical either way, which is what this pins.
+#[test]
+fn a_marker_in_an_ignored_file_is_not_harvested() {
+    let dir = seeded("scan-ignored");
+    write(&dir, ".cltignore", "vendor/\n");
+    write(
+        &dir,
+        "vendor/lib.js",
+        "// TODO(clt): a vendored marker nobody wants harvested\n",
+    );
+    write(&dir, "src/real.rs", "// TODO(clt): a marker worth having\n");
+    git_ok(&dir, &["add", "-A"]);
+    git_ok(&dir, &["commit", "-qm", "markers"]);
+
+    clt_ok(&dir, &["scan"]);
+
+    let titles = titles(&dir);
+    assert!(
+        titles.iter().any(|t| t.contains("a marker worth having")),
+        "the real marker must be harvested; the list holds {titles:?}"
+    );
+    assert!(
+        !titles.iter().any(|t| t.contains("vendored marker")),
+        "an ignored file must not contribute a task; the list holds {titles:?}"
+    );
+
+    cleanup(&dir);
+}

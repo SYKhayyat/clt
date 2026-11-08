@@ -783,11 +783,9 @@ fn cmd_scan(ctx: &mut Ctx, args: cli::ScanArgs) -> Result<()> {
     };
 
     let ignores = scan::load_ignores(&repo.root);
-    let hits: Vec<scan::Hit> = scan::scan(&repo)?
-        .into_iter()
-        .filter(|h| !scan::is_own_storage(&h.file))
-        .filter(|h| !scan::is_ignored(&h.file, &ignores))
-        .collect();
+    // The exclusions are the scanner's business, because they decide what it
+    // reads rather than what it reports (#3).
+    let hits: Vec<scan::Hit> = scan::scan(&repo, &ignores)?;
 
     let branch = ctx.store.scope.branch().map(str::to_owned);
     let mut added = Vec::new();

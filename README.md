@@ -590,6 +590,11 @@ you're looking at.
 file `git ls-files` lists, and not excluded by `.cltignore`. `clt scan -n`
 shows what a scan would do without writing anything.
 
+**`clt scan` is slow.** It reads the files `git ls-files` lists, except the ones
+`.cltignore` excludes and clt's own `.clt/` — those are skipped before they are
+opened rather than filtered out of the results, so a large vendored tree costs
+nothing. If a scan is still slow, the files it is reading are the tracked ones.
+
 **It says the lock is held and nothing is running.** A stale `.clt/lock` from a
 process that died mid-write. Locks expire after 60 seconds, and deleting it is
 safe: the store itself is written by atomic rename, so there is never a

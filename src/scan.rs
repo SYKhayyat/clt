@@ -35,11 +35,20 @@ pub struct Hit {
 }
 
 /// Scans the working tree for markers.
-pub fn scan(repo: &Repo) -> Result<Vec<Hit>> {
+///
+/// `patterns` is the `.cltignore` set. It is applied here, with [`wants`],
+/// before anything is opened: the caller used to collect every hit and throw
+/// the excluded ones away afterwards, which meant reading every file in
+/// `git ls-files` — including whatever a project keeps in the tree but out of
+/// the scan — to discard most of the answers (#3). Same hits, less reading.
+pub fn scan(repo: &Repo, patterns: &[String]) -> Result<Vec<Hit>> {
     let files = list_files(repo)?;
     let mut hits = Vec::new();
 
     for rel in files {
+        if !wants(&rel, patterns) {
+            continue;
+        }
         let abs = repo.root.join(&rel);
         let Ok(meta) = std::fs::metadata(&abs) else {
             continue; // deleted between listing and reading
@@ -290,6 +299,16 @@ pub fn is_own_storage(path: &str) -> bool {
     path == ".clt" || path.starts_with(".clt/") || path == ".cltignore"
 }
 
+/// Whether a listed file is one the scan is supposed to read at all.
+///
+/// The two exclusions are the same file-level ones the caller used to apply to
+/// the finished hits. They live here because the answer decides whether to open
+/// the file, and a filter that runs after the read is a filter that paid for
+/// the read (#3).
+fn wants(rel: &str, patterns: &[String]) -> bool {
+    !is_own_storage(rel) && !is_ignored(rel, patterns)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -440,6 +459,25 @@ mod tests {
         // A prefix must stop at a path boundary, or `vendor` would also
         // swallow `vendored-thing/`.
         assert!(!is_ignored("vendorish/a.rs", &["vendor".to_string()]));
+    }
+
+    /// The two exclusions decide whether a file is opened, so they are checked
+    /// here rather than on the hits a read has already produced (#3).
+    #[test]
+    fn excludes_own_storage_and_ignored_paths_before_reading() {
+        let patterns = vec!["vendor/".to_string(), "*.min.js".to_string()];
+
+        assert!(wants("src/http.rs", &patterns));
+
+        // clt's own metadata, which would otherwise harvest itself.
+        assert!(!wants(".clt/tasks.json", &patterns));
+        assert!(!wants(".clt/node_modules/x.js", &patterns));
+
+        // And `.cltignore` itself, because it documents the marker syntax and
+        // the file that suppresses false positives must not be one.
+        assert!(!wants(".cltignore", &patterns));
+
+        assert!(!wants("vendor/lib.js", &patterns));
     }
 
     #[test]
